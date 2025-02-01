@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/1set/starlight v0.1.1 // indirect
+	github.com/1set/starlight v0.1.2 // indirect
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/h2so5/here v0.0.0-20200815043652-5e14eb691fae // indirect
