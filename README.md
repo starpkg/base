@@ -7,9 +7,12 @@ A generic base module that bridges the gap between online services, external lib
 
 ## Features
 
-- **`ConfigurableModule`**: A generic module that can be extended with custom configurations.
-- **Flexible Configuration**: Supports setting and retrieving configuration values dynamically.
-- **Starlark Integration**: Provides Starlark callable functions to interact with configurations.
+- **Flexible Configuration**: Rich configuration options with validation, dynamic getters, and metadata
+- **Type Safety**: Fully leverages Go generics for type-safe configurations
+- **Comprehensive Validation**: Support for custom validation rules for configuration values
+- **Starlark Integration**: Exposes getter/setter functions to Starlark scripts
+- **Secret Handling**: Special handling for sensitive configuration values
+- **Thread Safety**: Concurrency-safe operations for all configuration access
 
 ## Installation
 
@@ -21,13 +24,14 @@ go get github.com/starpkg/base
 
 ## Usage
 
-Here's how you can use the `ConfigurableModule` to create custom Starlark modules:
+Here's how you can use the enhanced `ConfigurableModule` to create custom Starlark modules:
 
 ```go
 package main
 
 import (
     "fmt"
+    "errors"
 
     "github.com/starpkg/base"
     "github.com/1set/starlet"
@@ -38,9 +42,30 @@ func main() {
     // Create a new configurable module
     cm := base.NewConfigurableModule[string]()
 
-    // Set configuration values
-    cm.SetConfigValue("api_key", "your-api-key")
-    cm.SetConfigValue("endpoint", "https://api.example.com")
+    // Create a configuration option with validation and description
+    apiKeyOption := base.NewConfigOption("").
+        WithDescription("API key for authentication").
+        WithValidator(func(value string) error {
+            if len(value) < 10 {
+                return errors.New("API key must be at least 10 characters")
+            }
+            return nil
+        }).
+        Required().
+        Secret()
+
+    // Register the configuration option
+    cm.SetConfigOption("api_key", apiKeyOption)
+
+    // Create an endpoint configuration with a default value
+    endpointOption := base.NewConfigOption("https://api.example.com").
+        WithDescription("API endpoint URL")
+
+    // Register the endpoint configuration
+    cm.SetConfigOption("endpoint", endpointOption)
+
+    // Set a value for the API key
+    cm.SetConfigValue("api_key", "your-api-key-here")
 
     // Add additional functions if needed
     additionalFuncs := starlark.StringDict{
@@ -65,10 +90,22 @@ func main() {
 
     // Use the module with Starlet or any Starlark interpreter
     script := `
-load("mymodule", "set_api_key", "set_endpoint", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
 
-set_api_key("new-api-key")
-set_endpoint("https://api.newexample.com")
+# Set configuration values
+set_api_key("new-api-key-1234567890")
+
+# Get configuration values
+endpoint = get_endpoint()
+print("Using endpoint:", endpoint)
+
+# Display all configurations
+configs = list_configs()
+for name, config in configs.items():
+    if not config["secret"]:
+        print(f"Config {name}: {config}")
+
+# Use the custom function
 do_something()
 `
 
@@ -78,52 +115,94 @@ do_something()
 
 ## Documentation
 
-### `ConfigurableModule`
+### Core Types
 
-`ConfigurableModule[T any]` is a generic module that allows you to set and get configuration values of any type `T`.
+#### `ConfigOption[T]`
 
-#### Methods
+A rich configuration option that provides validation, metadata, and special behaviors.
 
-- `NewConfigurableModule[T any]() *ConfigurableModule[T]`: Creates a new instance of `ConfigurableModule`.
+```go
+type ConfigOption[T any] struct {
+    Default     T                   // Default value
+    Getter      ConfigGetter[T]     // Dynamic value getter
+    Validator   ConfigValidator[T]  // Value validator
+    Description string              // Human-readable description
+    IsRequired  bool                // Whether the config is required
+    IsSecret    bool                // Whether the config is sensitive
+    // ... internal fields
+}
+```
 
-- `SetConfig(name string, getter ConfigGetter[T])`: Sets a configuration getter for a given name.
+#### `ConfigurableModule[T]`
 
-  ```go
-  cm.SetConfig("api_key", func() string { return "dynamic-api-key" })
-  ```
+A generic module that can be extended with various configuration options.
 
-- `SetConfigValue(name string, value T)`: Sets a direct configuration value for a given name.
+```go
+type ConfigurableModule[T any] struct {
+    // ... internal fields
+}
+```
 
-  ```go
-  cm.SetConfigValue("api_key", "your-api-key")
-  ```
+### Config Option Creation and Configuration
 
-- `GetConfig(name string) (T, error)`: Retrieves the configuration value for a given name.
+- `NewConfigOption[T](defaultValue T) *ConfigOption[T]`: Creates a new configuration option with a default value.
 
-  ```go
-  apiKey, err := cm.GetConfig("api_key")
-  ```
+- `WithDescription(desc string) *ConfigOption[T]`: Adds a description to the configuration option.
 
-- `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`: Returns a Starlark module loader with the given configurations and additional functions.
+- `WithValidator(validator ConfigValidator[T]) *ConfigOption[T]`: Adds a validator to verify configuration values.
 
-  ```go
-  loader := cm.LoadModule("mymodule", starlark.StringDict{
-      "my_function": myStarlarkFunction,
-  })
-  ```
+- `WithGetter(getter ConfigGetter[T]) *ConfigOption[T]`: Adds a dynamic getter function for the configuration.
+
+- `Required() *ConfigOption[T]`: Marks the configuration option as required.
+
+- `Secret() *ConfigOption[T]`: Marks the configuration option as a secret (sensitive).
+
+### Module Configuration
+
+- `NewConfigurableModule[T]() *ConfigurableModule[T]`: Creates a new module instance.
+
+- `SetConfigOption(name string, option *ConfigOption[T]) error`: Registers a configuration option.
+
+- `SetConfig(name string, getter ConfigGetter[T]) error`: Sets a dynamic getter function.
+
+- `SetConfigValue(name string, value T) error`: Sets a direct configuration value.
+
+- `Initialize() error`: Finalizes the module configuration and verifies required values.
+
+### Runtime Operations
+
+- `GetConfig(name string) (T, error)`: Retrieves a configuration value.
+
+- `ListConfigs() map[string]map[string]interface{}`: Returns information about all configurations.
+
+- `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`: Creates a Starlark module.
 
 ### Starlark Functions
 
-When you load the module in Starlark, it automatically provides setter functions for each configuration:
+When you load the module in Starlark, these functions are automatically provided:
 
-- `set_<config_name>(value)`: Sets the configuration value from within Starlark.
+- `set_<config_name>(value)`: Sets a configuration value.
+- `get_<config_name>()`: Gets a configuration value.
+- `list_configs()`: Returns information about all configurations.
 
 #### Example
 
 ```python
-load("mymodule", "set_api_key", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
 
+# Set configuration
 set_api_key("new-api-key")
+
+# Get configuration
+endpoint = get_endpoint()
+print("Using endpoint:", endpoint)
+
+# Inspect configurations
+configs = list_configs()
+for name, info in configs.items():
+    print(f"Config {name}: {info['description']}")
+
+# Use the module functionality
 do_something()
 ```
 
