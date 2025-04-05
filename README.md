@@ -15,6 +15,7 @@ A generic base module that bridges the gap between online services, external lib
 - **Thread Safety**: Concurrency-safe operations for all configuration access
 - **Modular Structure**: Organized into separate files for better maintainability
 - **Proper Encapsulation**: Well-defined public API with private implementation details
+- **Value Priority**: Control precedence between dynamic getters and explicit values
 
 ## Installation
 
@@ -65,6 +66,16 @@ func main() {
 
     // Register the endpoint configuration
     cm.SetConfigOption("endpoint", endpointOption)
+    
+    // Create a dynamic configuration option that always returns the current value
+    timestampOption := base.NewConfigOption("").
+        WithDescription("Current server timestamp").
+        WithGetter(func() string {
+            return time.Now().Format(time.RFC3339)
+        }).
+        PreferGetter()  // Always use the getter value, even if a value is set
+
+    cm.SetConfigOption("timestamp", timestampOption)
 
     // Set a value for the API key
     cm.SetConfigValue("api_key", "your-api-key-here")
@@ -93,7 +104,7 @@ func main() {
 
     // Use the module with Starlet or any Starlark interpreter
     script := `
-load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "list_configs", "do_something")
 
 # Set configuration values
 set_api_key("new-api-key-1234567890")
@@ -101,6 +112,10 @@ set_api_key("new-api-key-1234567890")
 # Get configuration values (note that get_api_key is NOT available as it's secret)
 endpoint = get_endpoint()
 print("Using endpoint:", endpoint)
+
+# Get dynamic configuration that always returns the latest value
+timestamp = get_timestamp()
+print("Current timestamp:", timestamp)
 
 # Display all configurations (secret values won't be shown)
 configs = list_configs()
@@ -138,7 +153,7 @@ type ConfigOption[T any] struct {
     Description string // Human-readable description, used for documentation and UI
     
     // Private fields - accessed through methods
-    // getter, validator, isRequired, isSecret, etc.
+    // getter, validator, isRequired, isSecret, valuePriority, etc.
 }
 ```
 
@@ -148,6 +163,21 @@ The `Description` field plays an important role in the configuration system:
 - It is displayed in the output of the `list_configs()` Starlark function
 - It should be clear and concise, explaining what the configuration is used for
 - It should include information about expected format or values when relevant
+
+#### `ValuePriority`
+
+Defines the precedence when both a direct value and a getter function are available:
+
+```go
+type ValuePriority int
+
+const (
+    // PrioritySetValue means explicitly set values take precedence over getters.
+    PrioritySetValue ValuePriority = iota
+    // PriorityGetter means getter functions take precedence over set values.
+    PriorityGetter
+)
+```
 
 #### `ConfigurableModule[T]`
 
@@ -172,6 +202,10 @@ type ConfigurableModule[T any] struct {
 - `Required() *ConfigOption[T]`: Marks the configuration option as required.
 
 - `Secret() *ConfigOption[T]`: Marks the configuration option as a secret (sensitive).
+
+- `PreferGetter() *ConfigOption[T]`: Makes the getter function take precedence over explicitly set values. Useful for dynamic configurations that should always return fresh values.
+
+- `PreferSetValue() *ConfigOption[T]`: Makes explicitly set values take precedence over the getter function. This is the default behavior and useful for overriding dynamic defaults.
 
 ### Module Configuration
 
@@ -206,7 +240,7 @@ When you load the module in Starlark, these functions are automatically provided
 #### Example
 
 ```python
-load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "list_configs", "do_something")
 
 # Set configuration (both secret and non-secret configs can be set)
 set_api_key("new-api-key")
@@ -215,6 +249,10 @@ set_api_key("new-api-key")
 endpoint = get_endpoint()
 print("Using endpoint:", endpoint)
 
+# Get dynamic configuration that always returns the latest value
+timestamp = get_timestamp()
+print("Current timestamp:", timestamp)
+
 # Inspect configurations (secret values will be hidden)
 configs = list_configs()
 for name, info in configs.items():
@@ -222,6 +260,30 @@ for name, info in configs.items():
 
 # Use the module functionality
 do_something()
+```
+
+## Value Priority Handling
+
+When both a direct value is set and a getter function is provided, the value returned depends on the configured priority:
+
+1. **PrioritySetValue** (default): Explicitly set values take precedence over dynamic getter functions. This allows overriding dynamic default values.
+
+2. **PriorityGetter**: Dynamic getter functions take precedence over explicitly set values. This is useful for values that should always be fresh, like timestamps or environment-specific information.
+
+You can control this behavior using the `PreferGetter()` and `PreferSetValue()` methods:
+
+```go
+// Always use the getter, even if a value is explicitly set
+option := NewConfigOption("").
+    WithDescription("Current server time").
+    WithGetter(func() string { return time.Now().Format(time.RFC3339) }).
+    PreferGetter()
+
+// Use the explicitly set value, falling back to the getter if no value is set (default behavior)
+option := NewConfigOption("default").
+    WithDescription("Base URL").
+    WithGetter(func() string { return getEnvironmentBaseURL() }).
+    PreferSetValue()
 ```
 
 ## Secret Configuration Handling

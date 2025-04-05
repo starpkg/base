@@ -12,6 +12,16 @@ type ConfigGetter[T any] func() T
 // ConfigValidator is a function type that validates a configuration value of type T.
 type ConfigValidator[T any] func(value T) error
 
+// ValuePriority defines which value source takes precedence when multiple are available.
+type ValuePriority int
+
+const (
+	// PrioritySetValue means explicitly set values take precedence over getters.
+	PrioritySetValue ValuePriority = iota
+	// PriorityGetter means getter functions take precedence over set values.
+	PriorityGetter
+)
+
 // ConfigOption represents an option for a configuration value.
 // Use NewConfigOption to create a new instance and the provided builder methods
 // to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
@@ -25,10 +35,11 @@ type ConfigOption[T any] struct {
 	Description string
 
 	// Private fields that should be accessed only through methods
-	getter     ConfigGetter[T]    // Use WithGetter() to set
-	validator  ConfigValidator[T] // Use WithValidator() to set
-	isRequired bool               // Use Required() to set
-	isSecret   bool               // Use Secret() to set
+	getter        ConfigGetter[T]    // Use WithGetter() to set
+	validator     ConfigValidator[T] // Use WithValidator() to set
+	isRequired    bool               // Use Required() to set
+	isSecret      bool               // Use Secret() to set
+	valuePriority ValuePriority      // Determines which value takes precedence
 
 	// Internal state fields
 	mu       sync.RWMutex
@@ -39,7 +50,8 @@ type ConfigOption[T any] struct {
 // NewConfigOption creates a new configuration option.
 func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	return &ConfigOption[T]{
-		Default: defaultValue,
+		Default:       defaultValue,
+		valuePriority: PrioritySetValue, // Default to prioritizing explicitly set values
 	}
 }
 
@@ -74,6 +86,20 @@ func (o *ConfigOption[T]) Secret() *ConfigOption[T] {
 	return o
 }
 
+// PreferGetter configures the option to prefer dynamic values from the getter
+// even when a direct value has been set.
+func (o *ConfigOption[T]) PreferGetter() *ConfigOption[T] {
+	o.valuePriority = PriorityGetter
+	return o
+}
+
+// PreferSetValue configures the option to prefer explicitly set values
+// over dynamic values from the getter (this is the default behavior).
+func (o *ConfigOption[T]) PreferSetValue() *ConfigOption[T] {
+	o.valuePriority = PrioritySetValue
+	return o
+}
+
 // getValue returns the current value of the configuration option.
 func (o *ConfigOption[T]) getValue() (T, error) {
 	o.mu.RLock()
@@ -85,15 +111,38 @@ func (o *ConfigOption[T]) getValue() (T, error) {
 		return zero, ErrSecretConfigNotRetrievable
 	}
 
-	if o.hasValue {
-		return o.value, nil
-	}
+	// Handle based on priority setting
+	switch o.valuePriority {
+	case PriorityGetter:
+		// Check getter first, then fall back to set value, then default
+		if o.getter != nil {
+			return o.getter(), nil
+		}
+		if o.hasValue {
+			return o.value, nil
+		}
+		return o.Default, nil
 
-	if o.getter != nil {
-		return o.getter(), nil
-	}
+	case PrioritySetValue:
+		// Check set value first, then fall back to getter, then default
+		if o.hasValue {
+			return o.value, nil
+		}
+		if o.getter != nil {
+			return o.getter(), nil
+		}
+		return o.Default, nil
 
-	return o.Default, nil
+	default:
+		// Should never happen, but fallback to default case
+		if o.hasValue {
+			return o.value, nil
+		}
+		if o.getter != nil {
+			return o.getter(), nil
+		}
+		return o.Default, nil
+	}
 }
 
 // getSecretValue returns the value even if it's secret (for internal use only).
@@ -101,15 +150,38 @@ func (o *ConfigOption[T]) getSecretValue() T {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	if o.hasValue {
-		return o.value
-	}
+	// Handle based on priority setting
+	switch o.valuePriority {
+	case PriorityGetter:
+		// Check getter first, then fall back to set value, then default
+		if o.getter != nil {
+			return o.getter()
+		}
+		if o.hasValue {
+			return o.value
+		}
+		return o.Default
 
-	if o.getter != nil {
-		return o.getter()
-	}
+	case PrioritySetValue:
+		// Check set value first, then fall back to getter, then default
+		if o.hasValue {
+			return o.value
+		}
+		if o.getter != nil {
+			return o.getter()
+		}
+		return o.Default
 
-	return o.Default
+	default:
+		// Should never happen, but fallback to default case
+		if o.hasValue {
+			return o.value
+		}
+		if o.getter != nil {
+			return o.getter()
+		}
+		return o.Default
+	}
 }
 
 // setValue sets the value of the configuration option.
