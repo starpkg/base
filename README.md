@@ -11,8 +11,9 @@ A generic base module that bridges the gap between online services, external lib
 - **Type Safety**: Fully leverages Go generics for type-safe configurations
 - **Comprehensive Validation**: Support for custom validation rules for configuration values
 - **Starlark Integration**: Exposes getter/setter functions to Starlark scripts
-- **Secret Handling**: Special handling for sensitive configuration values
+- **Secret Handling**: Special handling for sensitive configuration values (not exposable to Starlark)
 - **Thread Safety**: Concurrency-safe operations for all configuration access
+- **Modular Structure**: Organized into separate files for better maintainability
 
 ## Installation
 
@@ -52,7 +53,7 @@ func main() {
             return nil
         }).
         Required().
-        Secret()
+        Secret()  // Secret configs won't be exposable via get_* functions
 
     // Register the configuration option
     cm.SetConfigOption("api_key", apiKeyOption)
@@ -70,7 +71,8 @@ func main() {
     // Add additional functions if needed
     additionalFuncs := starlark.StringDict{
         "do_something": starlark.NewBuiltin("do_something", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-            apiKey, err := cm.GetConfig("api_key")
+            // We can use InternalGetConfig to get secret values within Go code
+            apiKey, err := cm.InternalGetConfig("api_key")
             if err != nil {
                 return starlark.None, err
             }
@@ -95,15 +97,14 @@ load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
 # Set configuration values
 set_api_key("new-api-key-1234567890")
 
-# Get configuration values
+# Get configuration values (note that get_api_key is NOT available as it's secret)
 endpoint = get_endpoint()
 print("Using endpoint:", endpoint)
 
-# Display all configurations
+# Display all configurations (secret values won't be shown)
 configs = list_configs()
 for name, config in configs.items():
-    if not config["secret"]:
-        print(f"Config {name}: {config}")
+    print(f"Config {name}: {config}")
 
 # Use the custom function
 do_something()
@@ -112,6 +113,14 @@ do_something()
     // Run the script with the module loader ...
 }
 ```
+
+## File Structure
+
+The package is organized into separate files for better maintainability:
+
+- `errors.go` - Common error definitions
+- `config.go` - Configuration option types and methods
+- `module.go` - Main module implementation and Starlark integration
 
 ## Documentation
 
@@ -128,7 +137,7 @@ type ConfigOption[T any] struct {
     Validator   ConfigValidator[T]  // Value validator
     Description string              // Human-readable description
     IsRequired  bool                // Whether the config is required
-    IsSecret    bool                // Whether the config is sensitive
+    IsSecret    bool                // Whether the config is a secret value
     // ... internal fields
 }
 ```
@@ -171,7 +180,9 @@ type ConfigurableModule[T any] struct {
 
 ### Runtime Operations
 
-- `GetConfig(name string) (T, error)`: Retrieves a configuration value.
+- `GetConfig(name string) (T, error)`: Retrieves a configuration value (non-secret only).
+
+- `InternalGetConfig(name string) (T, error)`: Retrieves any configuration value, including secrets (for internal Go code only).
 
 - `ListConfigs() map[string]map[string]interface{}`: Returns information about all configurations.
 
@@ -181,23 +192,23 @@ type ConfigurableModule[T any] struct {
 
 When you load the module in Starlark, these functions are automatically provided:
 
-- `set_<config_name>(value)`: Sets a configuration value.
-- `get_<config_name>()`: Gets a configuration value.
-- `list_configs()`: Returns information about all configurations.
+- `set_<config_name>(value)`: Sets a configuration value (available for all configs).
+- `get_<config_name>()`: Gets a configuration value (only available for non-secret configs).
+- `list_configs()`: Returns information about all configurations (values hidden for secret configs).
 
 #### Example
 
 ```python
 load("mymodule", "set_api_key", "get_endpoint", "list_configs", "do_something")
 
-# Set configuration
+# Set configuration (both secret and non-secret configs can be set)
 set_api_key("new-api-key")
 
-# Get configuration
+# Get configuration (only non-secret configs can be retrieved)
 endpoint = get_endpoint()
 print("Using endpoint:", endpoint)
 
-# Inspect configurations
+# Inspect configurations (secret values will be hidden)
 configs = list_configs()
 for name, info in configs.items():
     print(f"Config {name}: {info['description']}")
@@ -205,6 +216,17 @@ for name, info in configs.items():
 # Use the module functionality
 do_something()
 ```
+
+## Secret Configuration Handling
+
+Configurations marked as `Secret()` are handled differently:
+
+1. Secret configs can be set from both Go code and Starlark scripts using `SetConfigValue` and `set_<name>` functions.
+2. Secret configs cannot be accessed directly from Starlark code - no `get_<name>` function is exposed.
+3. Secret configs are not displayed in the `list_configs()` output values.
+4. Go code can access secret configs internally using the `InternalGetConfig` method.
+
+This design ensures that sensitive information like API keys can be set by Starlark scripts but cannot be accidentally leaked or exposed.
 
 ## Contributing
 
