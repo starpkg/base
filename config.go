@@ -100,6 +100,43 @@ func (o *ConfigOption[T]) PreferSetValue() *ConfigOption[T] {
 	return o
 }
 
+// resolveValue returns the current value based on priority settings.
+// This is an internal helper used by both getValue and getSecretValue.
+// It must be called with the mutex already locked.
+func (o *ConfigOption[T]) resolveValue() T {
+	switch o.valuePriority {
+	case PriorityGetter:
+		// Check getter first, then fall back to set value, then default
+		if o.getter != nil {
+			return o.getter()
+		}
+		if o.hasValue {
+			return o.value
+		}
+		return o.Default
+
+	case PrioritySetValue:
+		// Check set value first, then fall back to getter, then default
+		if o.hasValue {
+			return o.value
+		}
+		if o.getter != nil {
+			return o.getter()
+		}
+		return o.Default
+
+	default:
+		// Should never happen, but fallback to default case
+		if o.hasValue {
+			return o.value
+		}
+		if o.getter != nil {
+			return o.getter()
+		}
+		return o.Default
+	}
+}
+
 // getValue returns the current value of the configuration option.
 func (o *ConfigOption[T]) getValue() (T, error) {
 	o.mu.RLock()
@@ -111,38 +148,7 @@ func (o *ConfigOption[T]) getValue() (T, error) {
 		return zero, ErrSecretConfigNotRetrievable
 	}
 
-	// Handle based on priority setting
-	switch o.valuePriority {
-	case PriorityGetter:
-		// Check getter first, then fall back to set value, then default
-		if o.getter != nil {
-			return o.getter(), nil
-		}
-		if o.hasValue {
-			return o.value, nil
-		}
-		return o.Default, nil
-
-	case PrioritySetValue:
-		// Check set value first, then fall back to getter, then default
-		if o.hasValue {
-			return o.value, nil
-		}
-		if o.getter != nil {
-			return o.getter(), nil
-		}
-		return o.Default, nil
-
-	default:
-		// Should never happen, but fallback to default case
-		if o.hasValue {
-			return o.value, nil
-		}
-		if o.getter != nil {
-			return o.getter(), nil
-		}
-		return o.Default, nil
-	}
+	return o.resolveValue(), nil
 }
 
 // getSecretValue returns the value even if it's secret (for internal use only).
@@ -150,38 +156,7 @@ func (o *ConfigOption[T]) getSecretValue() T {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	// Handle based on priority setting
-	switch o.valuePriority {
-	case PriorityGetter:
-		// Check getter first, then fall back to set value, then default
-		if o.getter != nil {
-			return o.getter()
-		}
-		if o.hasValue {
-			return o.value
-		}
-		return o.Default
-
-	case PrioritySetValue:
-		// Check set value first, then fall back to getter, then default
-		if o.hasValue {
-			return o.value
-		}
-		if o.getter != nil {
-			return o.getter()
-		}
-		return o.Default
-
-	default:
-		// Should never happen, but fallback to default case
-		if o.hasValue {
-			return o.value
-		}
-		if o.getter != nil {
-			return o.getter()
-		}
-		return o.Default
-	}
+	return o.resolveValue()
 }
 
 // setValue sets the value of the configuration option.

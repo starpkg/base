@@ -25,13 +25,31 @@ func NewConfigurableModule[T any]() *ConfigurableModule[T] {
 	}
 }
 
+// checkInitialized returns an error if the module is already initialized.
+// It must be called with the mutex already locked.
+func (m *ConfigurableModule[T]) checkInitialized() error {
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	return nil
+}
+
+// getOption retrieves a configuration option by name.
+// Returns the option and a boolean indicating if it exists.
+func (m *ConfigurableModule[T]) getOption(name string) (*ConfigOption[T], bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	option, exists := m.configs[name]
+	return option, exists
+}
+
 // SetConfigOption sets a configuration option for a given name.
 func (m *ConfigurableModule[T]) SetConfigOption(name string, option *ConfigOption[T]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.initialized {
-		return ErrModuleAlreadyInitialized
+	if err := m.checkInitialized(); err != nil {
+		return err
 	}
 
 	m.configs[name] = option
@@ -43,8 +61,8 @@ func (m *ConfigurableModule[T]) SetConfig(name string, getter ConfigGetter[T]) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.initialized {
-		return ErrModuleAlreadyInitialized
+	if err := m.checkInitialized(); err != nil {
+		return err
 	}
 
 	option, exists := m.configs[name]
@@ -61,12 +79,12 @@ func (m *ConfigurableModule[T]) SetConfig(name string, getter ConfigGetter[T]) e
 
 // SetConfigValue sets a configuration value for a given name.
 func (m *ConfigurableModule[T]) SetConfigValue(name string, value T) error {
-	option, exists := m.configs[name]
+	option, exists := m.getOption(name)
 	if !exists {
 		m.mu.Lock()
-		if m.initialized {
+		if err := m.checkInitialized(); err != nil {
 			m.mu.Unlock()
-			return ErrModuleAlreadyInitialized
+			return err
 		}
 
 		option = NewConfigOption(value)
@@ -100,33 +118,32 @@ func (m *ConfigurableModule[T]) Initialize() error {
 	return nil
 }
 
+// findConfig finds a configuration option by name and returns an error if not found.
+func (m *ConfigurableModule[T]) findConfig(name string) (*ConfigOption[T], error) {
+	option, exists := m.getOption(name)
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
+	}
+	return option, nil
+}
+
 // GetConfig retrieves the configuration value for a given name.
 func (m *ConfigurableModule[T]) GetConfig(name string) (T, error) {
 	var zero T
-
-	m.mu.RLock()
-	option, exists := m.configs[name]
-	if !exists {
-		m.mu.RUnlock()
-		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
+	option, err := m.findConfig(name)
+	if err != nil {
+		return zero, err
 	}
-	m.mu.RUnlock()
-
 	return option.getValue()
 }
 
 // InternalGetConfig retrieves a configuration value, including secrets, for internal use only.
 func (m *ConfigurableModule[T]) InternalGetConfig(name string) (T, error) {
 	var zero T
-
-	m.mu.RLock()
-	option, exists := m.configs[name]
-	if !exists {
-		m.mu.RUnlock()
-		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
+	option, err := m.findConfig(name)
+	if err != nil {
+		return zero, err
 	}
-	m.mu.RUnlock()
-
 	return option.getSecretValue(), nil
 }
 
