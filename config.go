@@ -13,23 +13,27 @@ type ConfigGetter[T any] func() T
 type ConfigValidator[T any] func(value T) error
 
 // ConfigOption represents an option for a configuration value.
+// Use NewConfigOption to create a new instance and the provided builder methods
+// to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
 type ConfigOption[T any] struct {
 	// Default is the default value for the configuration.
 	Default T
-	// Getter is a function that returns the configuration value.
-	Getter ConfigGetter[T]
-	// Validator is a function that validates the configuration value.
-	Validator ConfigValidator[T]
+
 	// Description is a human-readable description of the configuration.
+	// This is used for documentation and displayed when listing configurations.
+	// It's recommended to provide a clear, concise explanation of what the config does.
 	Description string
-	// IsRequired indicates whether the configuration is required.
-	IsRequired bool
-	// IsSecret indicates whether the configuration is a secret (like API keys), secret values can't be retrieved from the module.
-	IsSecret bool
-	// Value holds the current value of the configuration.
+
+	// Private fields that should be accessed only through methods
+	getter     ConfigGetter[T]    // Use WithGetter() to set
+	validator  ConfigValidator[T] // Use WithValidator() to set
+	isRequired bool               // Use Required() to set
+	isSecret   bool               // Use Secret() to set
+
+	// Internal state fields
+	mu       sync.RWMutex
 	value    T
 	hasValue bool
-	mu       sync.RWMutex
 }
 
 // NewConfigOption creates a new configuration option.
@@ -40,6 +44,7 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 }
 
 // WithDescription adds a description to the configuration option.
+// The description is used for documentation and displayed when listing configurations.
 func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	o.Description = desc
 	return o
@@ -47,25 +52,25 @@ func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 
 // WithValidator adds a validator to the configuration option.
 func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
-	o.Validator = validator
+	o.validator = validator
 	return o
 }
 
 // WithGetter adds a custom getter to the configuration option.
 func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
-	o.Getter = getter
+	o.getter = getter
 	return o
 }
 
 // Required marks the configuration option as required.
 func (o *ConfigOption[T]) Required() *ConfigOption[T] {
-	o.IsRequired = true
+	o.isRequired = true
 	return o
 }
 
 // Secret marks the configuration option as a secret.
 func (o *ConfigOption[T]) Secret() *ConfigOption[T] {
-	o.IsSecret = true
+	o.isSecret = true
 	return o
 }
 
@@ -75,7 +80,7 @@ func (o *ConfigOption[T]) getValue() (T, error) {
 	defer o.mu.RUnlock()
 
 	// If the configuration is marked as secret, don't allow retrieval
-	if o.IsSecret {
+	if o.isSecret {
 		var zero T
 		return zero, ErrSecretConfigNotRetrievable
 	}
@@ -84,8 +89,8 @@ func (o *ConfigOption[T]) getValue() (T, error) {
 		return o.value, nil
 	}
 
-	if o.Getter != nil {
-		return o.Getter(), nil
+	if o.getter != nil {
+		return o.getter(), nil
 	}
 
 	return o.Default, nil
@@ -100,8 +105,8 @@ func (o *ConfigOption[T]) getSecretValue() T {
 		return o.value
 	}
 
-	if o.Getter != nil {
-		return o.Getter()
+	if o.getter != nil {
+		return o.getter()
 	}
 
 	return o.Default
@@ -109,8 +114,8 @@ func (o *ConfigOption[T]) getSecretValue() T {
 
 // setValue sets the value of the configuration option.
 func (o *ConfigOption[T]) setValue(value T) error {
-	if o.Validator != nil {
-		if err := o.Validator(value); err != nil {
+	if o.validator != nil {
+		if err := o.validator(value); err != nil {
 			return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
 		}
 	}
@@ -121,6 +126,20 @@ func (o *ConfigOption[T]) setValue(value T) error {
 	o.value = value
 	o.hasValue = true
 	return nil
+}
+
+// IsRequired returns whether the configuration option is required.
+func (o *ConfigOption[T]) IsRequired() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.isRequired
+}
+
+// IsSecret returns whether the configuration option is secret.
+func (o *ConfigOption[T]) IsSecret() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.isSecret
 }
 
 // hasSetValue returns whether the configuration option has a value set.
@@ -134,5 +153,5 @@ func (o *ConfigOption[T]) hasSetValue() bool {
 func (o *ConfigOption[T]) hasGetter() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.Getter != nil
+	return o.getter != nil
 }

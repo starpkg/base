@@ -14,6 +14,7 @@ A generic base module that bridges the gap between online services, external lib
 - **Secret Handling**: Special handling for sensitive configuration values (not exposable to Starlark)
 - **Thread Safety**: Concurrency-safe operations for all configuration access
 - **Modular Structure**: Organized into separate files for better maintainability
+- **Proper Encapsulation**: Well-defined public API with private implementation details
 
 ## Installation
 
@@ -45,7 +46,7 @@ func main() {
 
     // Create a configuration option with validation and description
     apiKeyOption := base.NewConfigOption("").
-        WithDescription("API key for authentication").
+        WithDescription("API key for authentication with the service").
         WithValidator(func(value string) error {
             if len(value) < 10 {
                 return errors.New("API key must be at least 10 characters")
@@ -60,7 +61,7 @@ func main() {
 
     // Create an endpoint configuration with a default value
     endpointOption := base.NewConfigOption("https://api.example.com").
-        WithDescription("API endpoint URL")
+        WithDescription("API endpoint URL for service connection")
 
     // Register the endpoint configuration
     cm.SetConfigOption("endpoint", endpointOption)
@@ -128,19 +129,25 @@ The package is organized into separate files for better maintainability:
 
 #### `ConfigOption[T]`
 
-A rich configuration option that provides validation, metadata, and special behaviors.
+A rich configuration option that provides validation, metadata, and special behaviors. Created using the builder pattern with `NewConfigOption` and its associated methods.
 
 ```go
 type ConfigOption[T any] struct {
-    Default     T                   // Default value
-    Getter      ConfigGetter[T]     // Dynamic value getter
-    Validator   ConfigValidator[T]  // Value validator
-    Description string              // Human-readable description
-    IsRequired  bool                // Whether the config is required
-    IsSecret    bool                // Whether the config is a secret value
-    // ... internal fields
+    // Public fields
+    Default     T      // Default value for the configuration
+    Description string // Human-readable description, used for documentation and UI
+    
+    // Private fields - accessed through methods
+    // getter, validator, isRequired, isSecret, etc.
 }
 ```
+
+The `Description` field plays an important role in the configuration system:
+
+- It provides human-readable documentation about the purpose of the configuration
+- It is displayed in the output of the `list_configs()` Starlark function
+- It should be clear and concise, explaining what the configuration is used for
+- It should include information about expected format or values when relevant
 
 #### `ConfigurableModule[T]`
 
@@ -148,7 +155,7 @@ A generic module that can be extended with various configuration options.
 
 ```go
 type ConfigurableModule[T any] struct {
-    // ... internal fields
+    // Internal fields - all private
 }
 ```
 
@@ -156,7 +163,7 @@ type ConfigurableModule[T any] struct {
 
 - `NewConfigOption[T](defaultValue T) *ConfigOption[T]`: Creates a new configuration option with a default value.
 
-- `WithDescription(desc string) *ConfigOption[T]`: Adds a description to the configuration option.
+- `WithDescription(desc string) *ConfigOption[T]`: Adds a description to the configuration option. Description should clearly explain the purpose and expected format of the configuration value.
 
 - `WithValidator(validator ConfigValidator[T]) *ConfigOption[T]`: Adds a validator to verify configuration values.
 

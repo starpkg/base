@@ -55,7 +55,7 @@ func (m *ConfigurableModule[T]) SetConfig(name string, getter ConfigGetter[T]) e
 		return nil
 	}
 
-	option.Getter = getter
+	option.WithGetter(getter)
 	return nil
 }
 
@@ -85,7 +85,7 @@ func (m *ConfigurableModule[T]) Initialize() error {
 
 	// Check if all required configs are set
 	for name, option := range m.configs {
-		if option.IsRequired {
+		if option.IsRequired() {
 			// For required options, ensure they have a value or a getter
 			if !option.hasSetValue() && !option.hasGetter() {
 				var zero T
@@ -188,14 +188,14 @@ func (m *ConfigurableModule[T]) ListConfigs() map[string]map[string]interface{} 
 	for name, option := range m.configs {
 		info := map[string]interface{}{
 			"description": option.Description,
-			"required":    option.IsRequired,
-			"secret":      option.IsSecret,
+			"required":    option.IsRequired(),
+			"secret":      option.IsSecret(),
 			"has_value":   option.hasSetValue(),
 			"has_getter":  option.hasGetter(),
 		}
 
 		// Only include values for non-secret configs
-		if !option.IsSecret {
+		if !option.IsSecret() {
 			val, err := option.getValue()
 			if err == nil {
 				info["value"] = val
@@ -222,7 +222,7 @@ func (m *ConfigurableModule[T]) LoadModule(moduleName string, additionalFuncs st
 		sd["set_"+name] = m.genSetConfig(name)
 
 		// Only add getter functions for non-secret configs
-		if !option.IsSecret {
+		if !option.IsSecret() {
 			sd["get_"+name] = m.genGetConfig(name)
 		}
 	}
