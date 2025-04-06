@@ -22,12 +22,11 @@ type ConfigOptionInterface interface {
 	HasGetter() bool
 	IsDefault() bool
 
-	// Methods for Starlark integration
-	ValidValue(v starlark.Value) error
+	// Starlark integration
 	SetValueFromStarlark(v starlark.Value) error
 	GetStarlarkValue() (starlark.Value, error)
 
-	// Methods for Go inspection
+	// Go inspection
 	GetInfo() map[string]interface{}
 }
 
@@ -116,10 +115,7 @@ func (m *ConfigurableModule) genSetFunction(name string, option ConfigOptionInte
 			return nil, err
 		}
 
-		// Validate and set value
-		if err := option.ValidValue(v); err != nil {
-			return nil, err
-		}
+		// Set value directly, validation happens inside SetValueFromStarlark
 		if err := option.SetValueFromStarlark(v); err != nil {
 			return nil, err
 		}

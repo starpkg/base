@@ -250,24 +250,6 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 
 // Starlark integration
 
-// ValidValue validates whether a starlark value can be properly set to this option.
-func (o *ConfigOption[T]) ValidValue(v starlark.Value) error {
-	// Convert to Go value
-	gv, err := dataconv.Unmarshal(v)
-	if err != nil {
-		return err
-	}
-
-	// Check type
-	_, ok := gv.(T)
-	if !ok {
-		var zero T
-		return fmt.Errorf("value type mismatch, expected %T, got %T", zero, gv)
-	}
-
-	return nil
-}
-
 // SetValueFromStarlark sets the configuration option from a starlark value.
 func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 	// Convert to Go value
@@ -283,7 +265,7 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 		return fmt.Errorf("value type mismatch, expected %T, got %T", zero, gv)
 	}
 
-	// Set value
+	// Set value (this will run any custom validators)
 	return o.SetValue(vt)
 }
 
