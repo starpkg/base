@@ -56,11 +56,9 @@ func Example_moduleUsage() {
 		"debug",
 		base.NewConfigOption(false).
 			WithDescription("Whether to enable debug mode").
+			WithValue(false).
 			Required(),
 	)
-
-	// Set a value for the required debug option
-	base.SetConfigValue(module, "debug", false)
 
 	// Array option
 	base.SetTypedConfigOption(
@@ -218,6 +216,7 @@ func Example_complexModule() {
 		"base_url",
 		base.NewConfigOption("https://api.example.com").
 			WithDescription("The base URL for API requests").
+			WithValue("https://api.example.com").
 			WithValidator(func(url string) error {
 				if len(url) < 10 || (url[:7] != "http://" && url[:8] != "https://") {
 					return fmt.Errorf("invalid URL format: must start with http:// or https://")
@@ -427,7 +426,7 @@ func Example_multipleModules() {
 	base.SetConfigValue(dbModule, "username", "user")
 
 	// Set password as secret option
-	passwordOpt := base.NewConfigOption("password").Secret()
+	passwordOpt := base.NewConfigOption("").WithValue("securepassword").Secret()
 	base.SetTypedConfigOption(dbModule, "password", passwordOpt)
 
 	base.SetConfigValue(dbModule, "database", "myapp")

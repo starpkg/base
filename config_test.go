@@ -72,6 +72,63 @@ func TestConfigOption(t *testing.T) {
 		}
 	})
 
+	// Test WithValue
+	t.Run("WithValue", func(t *testing.T) {
+		// Test basic WithValue functionality
+		opt := base.NewConfigOption("default").WithValue("initial_value")
+
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "initial_value" {
+			t.Errorf("Expected 'initial_value', got '%s'", val)
+		}
+
+		// Test WithValue with validator
+		validatedOpt := base.NewConfigOption(0).
+			WithValidator(func(val int) error {
+				if val < 0 {
+					return base.ErrConfigInvalidValue
+				}
+				return nil
+			}).
+			WithValue(-10) // Should pass even with invalid value since WithValue ignores validators
+
+		valInt, err := validatedOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if valInt != -10 {
+			t.Errorf("Expected -10, got %d", valInt)
+		}
+
+		// Now try direct SetValue which should enforce validation
+		err = validatedOpt.SetValue(-5)
+		if err == nil {
+			t.Error("Expected SetValue to fail validation with negative number, but it succeeded")
+		}
+
+		// Test chain of builder methods with WithValue
+		chainedOpt := base.NewConfigOption("").
+			WithName("option_name").
+			WithDescription("An option with a value").
+			WithValue("chain_value").
+			Required()
+
+		if !chainedOpt.HasValue() {
+			t.Error("HasValue should return true after using WithValue")
+		}
+
+		chainVal, err := chainedOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if chainVal != "chain_value" {
+			t.Errorf("Expected 'chain_value', got '%s'", chainVal)
+		}
+	})
+
 	// Test getter
 	t.Run("Getter", func(t *testing.T) {
 		dynamicValue := "initial"

@@ -89,6 +89,18 @@ func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
 	return o
 }
 
+// WithValue sets the value of the configuration option.
+// This is useful for chain calls when building a configuration option.
+// Unlike SetValue, this method ignores any validators since it's part of a builder chain.
+// Validation will occur during module initialization or when calling SetValue directly.
+func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
+	// Skip validator checks in the builder pattern
+	// Validation will happen during Initialize() or when using SetValue directly
+	o.value = value
+	o.hasValue = true
+	return o
+}
+
 // Required marks the configuration option as required.
 func (o *ConfigOption[T]) Required() *ConfigOption[T] {
 	o.isRequired = true
