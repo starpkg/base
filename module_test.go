@@ -547,4 +547,66 @@ func TestHelperFunctions(t *testing.T) {
 			t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
 		}
 	})
+
+	// Test NewConfigurableModuleWithOptions
+	t.Run("NewConfigurableModuleWithOptions", func(t *testing.T) {
+		// Create a module with options
+		stringOption := base.NewConfigOption("default_string").WithDescription("A string option")
+
+		// Test successful creation with multiple options
+		module, err := base.NewConfigurableModuleWithOptions(
+			base.WithTypedConfigOption("string_opt", stringOption),
+			base.WithConfigValue("int_opt", 100),
+			base.WithConfigGetter("dynamic_opt", func() string {
+				return "dynamic_value"
+			}),
+		)
+
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+		}
+
+		// Check if options were correctly set
+		stringVal, err := base.GetConfigValue[string](module, "string_opt")
+		if err != nil {
+			t.Fatalf("GetConfigValue for string_opt failed: %v", err)
+		}
+		if stringVal != "default_string" {
+			t.Errorf("Expected string_opt value 'default_string', got '%s'", stringVal)
+		}
+
+		intVal, err := base.GetConfigValue[int](module, "int_opt")
+		if err != nil {
+			t.Fatalf("GetConfigValue for int_opt failed: %v", err)
+		}
+		if intVal != 100 {
+			t.Errorf("Expected int_opt value 100, got %d", intVal)
+		}
+
+		dynamicVal, err := base.GetConfigValue[string](module, "dynamic_opt")
+		if err != nil {
+			t.Fatalf("GetConfigValue for dynamic_opt failed: %v", err)
+		}
+		if dynamicVal != "dynamic_value" {
+			t.Errorf("Expected dynamic_opt value 'dynamic_value', got '%s'", dynamicVal)
+		}
+
+		// Test with a failing option
+		invalidModule, err := base.NewConfigurableModuleWithOptions(
+			base.WithTypedConfigOption("invalid", base.NewConfigOption(0).
+				WithValidator(func(val int) error {
+					return fmt.Errorf("always fails")
+				}).
+				WithValue(0)),
+		)
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithOptions should not fail during creation: %v", err)
+		}
+
+		// Validation should fail during Initialize
+		err = invalidModule.Initialize()
+		if err == nil {
+			t.Fatal("Expected invalidModule.Initialize() to fail with invalid option")
+		}
+	})
 }

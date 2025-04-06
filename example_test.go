@@ -207,101 +207,101 @@ print("  formatted time:", get_current_time("2006-01-02"))
 // Example_complexModule demonstrates building a more complex module
 // with multiple option types and complex validation logic
 func Example_complexModule() {
-	// Create a new module for a hypothetical HTTP client configuration
-	module := base.NewConfigurableModule()
-
-	// Base URL with validation
-	base.SetTypedConfigOption(
-		module,
-		"base_url",
-		base.NewConfigOption("https://api.example.com").
-			WithDescription("The base URL for API requests").
-			WithValue("https://api.example.com").
-			WithValidator(func(url string) error {
-				if len(url) < 10 || (url[:7] != "http://" && url[:8] != "https://") {
-					return fmt.Errorf("invalid URL format: must start with http:// or https://")
-				}
-				return nil
-			}).
-			SetRequired(true),
-	)
-
-	// Authentication options
-	base.SetTypedConfigOption(
-		module,
-		"auth",
-		base.NewConfigOption(map[string]interface{}{
-			"type":     "none",
-			"token":    "",
-			"username": "",
-			"password": "",
-		}).WithDescription("Authentication configuration").
-			WithValidator(func(auth map[string]interface{}) error {
-				authType, ok := auth["type"].(string)
-				if !ok {
-					return fmt.Errorf("auth must have a 'type' string field")
-				}
-
-				switch authType {
-				case "none":
-					// No validation needed
-				case "token":
-					token, ok := auth["token"].(string)
-					if !ok || token == "" {
-						return fmt.Errorf("token auth requires a non-empty token")
+	// Create a new module for a hypothetical HTTP client configuration with options
+	module, err := base.NewConfigurableModuleWithOptions(
+		// Base URL with validation
+		base.WithTypedConfigOption(
+			"base_url",
+			base.NewConfigOption("https://api.example.com").
+				WithDescription("The base URL for API requests").
+				WithValue("https://api.example.com").
+				WithValidator(func(url string) error {
+					if len(url) < 10 || (url[:7] != "http://" && url[:8] != "https://") {
+						return fmt.Errorf("invalid URL format: must start with http:// or https://")
 					}
-				case "basic":
-					username, ok1 := auth["username"].(string)
-					password, ok2 := auth["password"].(string)
-					if !ok1 || !ok2 || username == "" || password == "" {
-						return fmt.Errorf("basic auth requires username and password")
+					return nil
+				}).
+				SetRequired(true),
+		),
+
+		// Authentication options
+		base.WithTypedConfigOption(
+			"auth",
+			base.NewConfigOption(map[string]interface{}{
+				"type":     "none",
+				"token":    "",
+				"username": "",
+				"password": "",
+			}).WithDescription("Authentication configuration").
+				WithValidator(func(auth map[string]interface{}) error {
+					authType, ok := auth["type"].(string)
+					if !ok {
+						return fmt.Errorf("auth must have a 'type' string field")
 					}
-				default:
-					return fmt.Errorf("unsupported auth type: %s", authType)
-				}
-				return nil
-			}),
-	)
 
-	// Request options with nested validation
-	base.SetTypedConfigOption(
-		module,
-		"request",
-		base.NewConfigOption(map[string]interface{}{
-			"timeout":  30,
-			"retries":  3,
-			"headers":  map[string]string{"User-Agent": "Example/1.0"},
-			"verify":   true,
-			"encoding": "json",
-		}).WithDescription("HTTP request options").
-			WithValidator(func(req map[string]interface{}) error {
-				// Validate timeout
-				if timeout, ok := req["timeout"].(int); !ok || timeout <= 0 {
-					return fmt.Errorf("timeout must be a positive integer")
-				}
+					switch authType {
+					case "none":
+						// No validation needed
+					case "token":
+						token, ok := auth["token"].(string)
+						if !ok || token == "" {
+							return fmt.Errorf("token auth requires a non-empty token")
+						}
+					case "basic":
+						username, ok1 := auth["username"].(string)
+						password, ok2 := auth["password"].(string)
+						if !ok1 || !ok2 || username == "" || password == "" {
+							return fmt.Errorf("basic auth requires username and password")
+						}
+					default:
+						return fmt.Errorf("unsupported auth type: %s", authType)
+					}
+					return nil
+				}),
+		),
 
-				// Validate retries
-				if retries, ok := req["retries"].(int); !ok || retries < 0 {
-					return fmt.Errorf("retries must be a non-negative integer")
-				}
+		// Request options with nested validation
+		base.WithTypedConfigOption(
+			"request",
+			base.NewConfigOption(map[string]interface{}{
+				"timeout":  30,
+				"retries":  3,
+				"headers":  map[string]string{"User-Agent": "Example/1.0"},
+				"verify":   true,
+				"encoding": "json",
+			}).WithDescription("HTTP request options").
+				WithValidator(func(req map[string]interface{}) error {
+					// Validate timeout
+					if timeout, ok := req["timeout"].(int); !ok || timeout <= 0 {
+						return fmt.Errorf("timeout must be a positive integer")
+					}
 
-				// Validate encoding
-				if encoding, ok := req["encoding"].(string); ok {
-					valid := false
-					for _, e := range []string{"json", "xml", "form", "binary"} {
-						if encoding == e {
-							valid = true
-							break
+					// Validate retries
+					if retries, ok := req["retries"].(int); !ok || retries < 0 {
+						return fmt.Errorf("retries must be a non-negative integer")
+					}
+
+					// Validate encoding
+					if encoding, ok := req["encoding"].(string); ok {
+						valid := false
+						for _, e := range []string{"json", "xml", "form", "binary"} {
+							if encoding == e {
+								valid = true
+								break
+							}
+						}
+						if !valid {
+							return fmt.Errorf("encoding must be one of: json, xml, form, binary")
 						}
 					}
-					if !valid {
-						return fmt.Errorf("encoding must be one of: json, xml, form, binary")
-					}
-				}
 
-				return nil
-			}),
+					return nil
+				}),
+		),
 	)
+	if err != nil {
+		log.Fatalf("Failed to create module: %v", err)
+	}
 
 	// Initialize the module
 	if err := module.Initialize(); err != nil {
@@ -416,29 +416,32 @@ print("  Response 2:", response2)
 
 // Example_multipleModules demonstrates how to use multiple modules together
 func Example_multipleModules() {
-	// Create modules for database and logging components
-	dbModule := base.NewConfigurableModule()
-	logModule := base.NewConfigurableModule()
-
-	// Configure database module
-	base.SetConfigValue(dbModule, "host", "localhost")
-	base.SetConfigValue(dbModule, "port", 5432)
-	base.SetConfigValue(dbModule, "username", "user")
-
-	// Set password as secret option
-	passwordOpt := base.NewConfigOption("").WithValue("securepassword").SetSecret(true)
-	base.SetTypedConfigOption(dbModule, "password", passwordOpt)
-
-	base.SetConfigValue(dbModule, "database", "myapp")
-	base.SetConfigValue(dbModule, "pool_size", 10)
+	// Create modules for database and logging components using the options constructor
+	dbModule, err := base.NewConfigurableModuleWithOptions(
+		base.WithConfigValue("host", "localhost"),
+		base.WithConfigValue("port", 5432),
+		base.WithConfigValue("username", "user"),
+		base.WithConfigValue("database", "myapp"),
+		base.WithConfigValue("pool_size", 10),
+		base.WithTypedConfigOption("password",
+			base.NewConfigOption("").WithValue("securepassword").SetSecret(true)),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create database module: %v", err)
+	}
 	dbModule.Initialize()
 
-	// Configure logging module
-	base.SetConfigValue(logModule, "level", "info")
-	base.SetConfigValue(logModule, "file", "/var/log/myapp.log")
-	base.SetConfigValue(logModule, "format", "json")
-	base.SetConfigValue(logModule, "rotate", true)
-	base.SetConfigValue(logModule, "max_size", 100)
+	// Create logging module with options
+	logModule, err := base.NewConfigurableModuleWithOptions(
+		base.WithConfigValue("level", "info"),
+		base.WithConfigValue("file", "/var/log/myapp.log"),
+		base.WithConfigValue("format", "json"),
+		base.WithConfigValue("rotate", true),
+		base.WithConfigValue("max_size", 100),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create logging module: %v", err)
+	}
 	logModule.Initialize()
 
 	// Custom functions for database module

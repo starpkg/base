@@ -23,45 +23,55 @@ func main() {
 
 // setupModule creates and configures a module with various config types
 func setupModule() *base.ConfigurableModule {
-	module := base.NewConfigurableModule()
+	// Create a new module with all configuration options
+	module, err := base.NewConfigurableModuleWithOptions(
+		// Basic configs: string, int, and float
+		base.WithConfigValue("string_option", "default"),
+		base.WithConfigValue("int_option", 42),
+		base.WithConfigValue("float_value", 3.14159),
 
-	// Basic configs: string, int, and float
-	base.SetConfigValue(module, "string_option", "default")
-	base.SetConfigValue(module, "int_option", 42)
-	base.SetConfigValue(module, "float_value", 3.14159)
+		// Boolean config with validation
+		base.WithTypedConfigOption(
+			"bool_option",
+			base.NewConfigOption(false).
+				WithName("bool_option").
+				WithDescription("A boolean configuration option").
+				WithValidator(func(v bool) error {
+					if !v {
+						return fmt.Errorf("value must be true")
+					}
+					return nil
+				}).
+				SetRequired(true),
+		),
 
-	// Boolean config with validation
-	boolOption := base.NewConfigOption(false).
-		WithName("bool_option").
-		WithDescription("A boolean configuration option").
-		WithValidator(func(v bool) error {
-			if !v {
-				return fmt.Errorf("value must be true")
-			}
-			return nil
-		}).
-		SetRequired(true)
-	base.SetTypedConfigOption(module, "bool_option", boolOption)
-	base.SetConfigValue(module, "bool_option", true) // Set to satisfy validation
+		// Complex config (map)
+		base.WithConfigValue("complex_option", map[string]interface{}{
+			"name":     "default",
+			"timeout":  time.Second.Seconds(),
+			"attempts": 3,
+		}),
 
-	// Complex config (map)
-	complexConfig := map[string]interface{}{
-		"name":     "default",
-		"timeout":  time.Second.Seconds(),
-		"attempts": 3,
+		// Secret config (won't be accessible from Starlark)
+		base.WithTypedConfigOption(
+			"secret_option",
+			base.NewConfigOption("secret-value").
+				WithName("secret_option").
+				SetSecret(true),
+		),
+
+		// Dynamic config with getter function
+		base.WithConfigGetter("current_time", func() string {
+			return time.Now().Format(time.RFC3339)
+		}),
+	)
+
+	if err != nil {
+		log.Fatalf("Failed to create module: %v", err)
 	}
-	base.SetConfigValue(module, "complex_option", complexConfig)
 
-	// Secret config (won't be accessible from Starlark)
-	secretOpt := base.NewConfigOption("secret-value").
-		WithName("secret_option").
-		SetSecret(true)
-	base.SetTypedConfigOption(module, "secret_option", secretOpt)
-
-	// Dynamic config with getter function
-	base.SetConfigGetter(module, "current_time", func() string {
-		return time.Now().Format(time.RFC3339)
-	})
+	// Set boolean value to satisfy validation
+	base.SetConfigValue(module, "bool_option", true)
 
 	// Initialize the module
 	if err := module.Initialize(); err != nil {
@@ -108,30 +118,41 @@ func runStarlarkTest(module *base.ConfigurableModule) {
 
 	fmt.Println("Running Starlark script:")
 	script := `
+load("config", "get_string_option", "get_int_option", "get_float_value", "get_bool_option", "get_current_time", "get_complex_option", "get_timestamp", "set_string_option", "set_int_option", "set_bool_option")
+
 # Access configuration values
 print("Initial values:")
-print("  string_option:", config.get_string_option())
-print("  int_option:", config.get_int_option())
-print("  float_value:", config.get_float_value())
-print("  bool_option:", config.get_bool_option())
-print("  current_time:", config.get_current_time())
-print("  complex_option:", config.get_complex_option())
-print("  timestamp:", config.get_timestamp())
+print("  string_option:", get_string_option())
+print("  int_option:", get_int_option())
+print("  float_value:", get_float_value())
+print("  bool_option:", get_bool_option())
+print("  current_time:", get_current_time())
+print("  complex_option:", get_complex_option())
+print("  timestamp:", get_timestamp())
 
 # Update configurations
-config.set_string_option("new string value")
-config.set_int_option(100)
-config.set_bool_option(True)
+set_string_option("new string value")
+set_int_option(100)
+set_bool_option(True)
 
 print("\nUpdated values:")
-print("  string_option:", config.get_string_option())
-print("  int_option:", config.get_int_option())
-print("  bool_option:", config.get_bool_option())
+print("  string_option:", get_string_option())
+print("  int_option:", get_int_option())
+print("  bool_option:", get_bool_option())
 `
 
 	// Run script
-	box := starlet.NewWithLoaders(nil, []starlet.ModuleLoader{moduleLoader}, nil)
-	if _, err := box.RunScript([]byte(script), nil); err != nil {
+	machine := starlet.NewDefault()
+
+	// Set up the module loader
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["config"] = moduleLoader
+	machine.SetLazyloadModules(loaders)
+
+	// Set and run the script
+	machine.SetScriptContent([]byte(script))
+	_, err := machine.Run()
+	if err != nil {
 		log.Fatalf("Script execution failed: %v", err)
 	}
 

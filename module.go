@@ -35,11 +35,56 @@ type ConfigurableModule struct {
 	configs     map[string]ConfigOptionInterface
 }
 
+// ModuleOption is a function that applies configuration to a ConfigurableModule.
+type ModuleOption func(*ConfigurableModule) error
+
+// WithConfigOption sets a configuration option for the module.
+func WithConfigOption(name string, option ConfigOptionInterface) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return m.SetConfigOption(name, option)
+	}
+}
+
+// WithTypedConfigOption sets a strongly-typed configuration option for the module.
+func WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetTypedConfigOption(m, name, option)
+	}
+}
+
+// WithConfigValue sets a configuration value directly.
+func WithConfigValue[T any](name string, value T) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigValue(m, name, value)
+	}
+}
+
+// WithConfigGetter sets a dynamic getter function for the module.
+func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigGetter(m, name, getter)
+	}
+}
+
 // NewConfigurableModule creates a new instance of ConfigurableModule.
 func NewConfigurableModule() *ConfigurableModule {
 	return &ConfigurableModule{
 		configs: make(map[string]ConfigOptionInterface),
 	}
+}
+
+// NewConfigurableModuleWithOptions creates a new instance of ConfigurableModule with the given options.
+// This allows for a more fluent API when creating and configuring modules.
+func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error) {
+	module := NewConfigurableModule()
+
+	for _, option := range options {
+		if err := option(module); err != nil {
+			return nil, fmt.Errorf("failed to apply module option: %w", err)
+		}
+	}
+
+	return module, nil
 }
 
 // SetConfigOption sets a configuration option for a given name.
