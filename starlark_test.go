@@ -1,6 +1,8 @@
 package base_test
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/1set/starlet"
@@ -9,132 +11,226 @@ import (
 )
 
 func TestStarlarkIntegration(t *testing.T) {
-	// Create a module with various config options
+	// Test basic Starlark integration
+	t.Run("BasicIntegration", func(t *testing.T) {
+		// Create a module with options
+		module := base.NewConfigurableModule()
+
+		// Add a string option
+		module.SetConfigOption("string_opt", base.NewConfigOption("default"))
+
+		// Add an int option
+		module.SetConfigOption("int_opt", base.NewConfigOption(42))
+
+		// Add a bool option
+		module.SetConfigOption("bool_opt", base.NewConfigOption(true))
+
+		// Initialize and load the module
+		err := module.Initialize()
+		if err != nil {
+			t.Fatalf("Initialize failed: %v", err)
+		}
+
+		// Load the module with starlark
+		loader := module.LoadModule("test_module", nil)
+		dict, err := loader()
+		if err != nil {
+			t.Fatalf("Module loading failed: %v", err)
+		}
+
+		// Test setter and getter functions
+		setString, ok := dict["set_string_opt"].(starlark.Callable)
+		if !ok {
+			t.Fatal("set_string_opt should be a Callable")
+		}
+
+		getString, ok := dict["get_string_opt"].(starlark.Callable)
+		if !ok {
+			t.Fatal("get_string_opt should be a Callable")
+		}
+
+		// Call the setter
+		_, err = setString.CallInternal(nil, starlark.Tuple{starlark.String("new_value")}, nil)
+		if err != nil {
+			t.Fatalf("Failed to call set_string_opt: %v", err)
+		}
+
+		// Call the getter to verify the value was set
+		result, err := getString.CallInternal(nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Failed to call get_string_opt: %v", err)
+		}
+
+		if result.String() != `"new_value"` {
+			t.Errorf("Expected \"new_value\", got %s", result.String())
+		}
+
+		// Test invalid calls
+		_, err = setString.CallInternal(nil, starlark.Tuple{}, nil) // Missing argument
+		if err == nil {
+			t.Error("Expected error for missing argument, got nil")
+		}
+
+		_, err = setString.CallInternal(nil, starlark.Tuple{starlark.MakeInt(123)}, nil) // Wrong type
+		if err == nil {
+			t.Error("Expected error for wrong type, got nil")
+		}
+	})
+
+	// Test complex Starlark value conversion
+	t.Run("ComplexValueConversion", func(t *testing.T) {
+		// Test with map conversion
+		mapOpt := base.NewConfigOption(map[string]int{})
+
+		// Create a Starlark dict
+		dict := starlark.NewDict(3)
+		dict.SetKey(starlark.String("key1"), starlark.MakeInt(1))
+		dict.SetKey(starlark.String("key2"), starlark.MakeInt(2))
+		dict.SetKey(starlark.String("key3"), starlark.MakeInt(3))
+
+		// Set value from Starlark
+		err := mapOpt.SetValueFromStarlark(dict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for map: %v", err)
+		}
+
+		// Get and verify the value
+		val, err := mapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(val) != 3 || val["key1"] != 1 || val["key2"] != 2 || val["key3"] != 3 {
+			t.Errorf("Expected map with 3 keys and values, got %v", val)
+		}
+
+		// Test with slice conversion
+		sliceOpt := base.NewConfigOption([]float64{})
+
+		// Create a Starlark list
+		list := starlark.NewList([]starlark.Value{
+			starlark.Float(1.1),
+			starlark.Float(2.2),
+			starlark.Float(3.3),
+		})
+
+		// Set value from Starlark
+		err = sliceOpt.SetValueFromStarlark(list)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for slice: %v", err)
+		}
+
+		// Get and verify the value
+		sliceVal, err := sliceOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(sliceVal) != 3 || sliceVal[0] != 1.1 || sliceVal[1] != 2.2 || sliceVal[2] != 3.3 {
+			t.Errorf("Expected slice with 3 elements, got %v", sliceVal)
+		}
+
+		// Test with incorrect types
+		invalidSliceOpt := base.NewConfigOption([]int{})
+		invalidList := starlark.NewList([]starlark.Value{
+			starlark.String("not an int"),
+			starlark.MakeInt(2),
+		})
+
+		err = invalidSliceOpt.SetValueFromStarlark(invalidList)
+		if err == nil {
+			t.Error("Expected error for invalid slice element type, got nil")
+		}
+
+		invalidMapOpt := base.NewConfigOption(map[int]string{})
+		invalidDict := starlark.NewDict(1)
+		invalidDict.SetKey(starlark.String("not an int key"), starlark.String("value"))
+
+		err = invalidMapOpt.SetValueFromStarlark(invalidDict)
+		if err == nil {
+			t.Error("Expected error for invalid map key type, got nil")
+		}
+	})
+
+	// Test edge cases
+	t.Run("EdgeCases", func(t *testing.T) {
+		// Test setting a value that can't be converted
+		opt := base.NewConfigOption(struct{}{})
+		err := opt.SetValueFromStarlark(starlark.String("can't convert to struct"))
+		if err == nil {
+			t.Error("Expected error when setting value of incompatible type, got nil")
+		}
+
+		// Test GetStarlarkValue for nil or error cases
+		secretOpt := base.NewConfigOption("secret").SetSecret(true)
+		_, err = secretOpt.GetStarlarkValue()
+		if err == nil {
+			t.Error("Expected error when getting value of secret option, got nil")
+		}
+		if !errors.Is(err, base.ErrSecretConfigNotRetrievable) {
+			t.Errorf("Expected ErrSecretConfigNotRetrievable, got %v", err)
+		}
+	})
+}
+
+// TestGenSetFunction tests the genSetFunction method in isolation
+func TestGenSetFunction(t *testing.T) {
 	module := base.NewConfigurableModule()
 
-	// String option
-	strOpt := base.NewConfigOption("default_string").
-		WithDescription("A string option")
-	base.SetTypedConfigOption(module, "string_option", strOpt)
+	// Add a config option with validator
+	validatedOpt := base.NewConfigOption(0).WithValidator(func(val int) error {
+		if val < 0 {
+			return fmt.Errorf("value must be non-negative")
+		}
+		return nil
+	})
 
-	// Int option
-	intOpt := base.NewConfigOption(42).
-		WithDescription("An int option")
-	base.SetTypedConfigOption(module, "int_option", intOpt)
+	module.SetConfigOption("validated", validatedOpt)
 
-	// Boolean option
-	boolOpt := base.NewConfigOption(true).
-		WithDescription("A boolean option")
-	base.SetTypedConfigOption(module, "bool_option", boolOpt)
-
-	// Secret option
-	secretOpt := base.NewConfigOption("secret_value").
-		WithDescription("A secret option").
-		SetSecret(true)
-	base.SetTypedConfigOption(module, "secret_option", secretOpt)
-
-	// Add a custom function
-	additionalFuncs := starlark.StringDict{
-		"custom_func": starlark.NewBuiltin("custom_func", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-			return starlark.String("custom_result"), nil
-		}),
-	}
-
-	// Get the module loader
-	moduleLoader := module.LoadModule("test_module", additionalFuncs)
-
-	// Use starlet to execute the script
-	script := `
-load("test_module", "get_string_option", "get_int_option", "get_bool_option", "set_string_option", "set_int_option", "set_bool_option", "set_secret_option", "custom_func")
-
-# Get current values
-initial_string = get_string_option()
-initial_int = get_int_option()
-initial_bool = get_bool_option()
-
-# Set new values
-set_string_option("starlark_string")
-set_int_option(100)
-set_bool_option(False)
-
-# Use the custom function
-custom_result = custom_func()
-
-# Set the secret option
-set_secret_option("new_secret")
-
-# Return the values for verification
-result = {
-    "initial_string": initial_string,
-    "initial_int": initial_int,
-    "initial_bool": initial_bool,
-    "custom_result": custom_result,
-}
-`
-
-	// Create runtime environment
-	env := starlet.NewDefault()
-	loaders := make(map[string]starlet.ModuleLoader)
-	loaders["test_module"] = moduleLoader
-	env.SetLazyloadModules(loaders)
-	env.SetScriptContent([]byte(script))
-
-	// Execute the script
-	result, err := env.Run()
+	// Initialize the module
+	err := module.Initialize()
 	if err != nil {
-		t.Fatalf("Failed to execute Starlark script: %v", err)
+		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Verify the Starlark execution using starlet's result handling
-	if result == nil {
-		t.Fatalf("No result returned from script execution")
-	}
-
-	// Print the result for debugging
-	t.Logf("Result from script: %+v", result)
-
-	// Skip the map extraction and just check if the individual values were updated correctly
-
-	// Verify the options were actually updated
-	strValue, err := base.GetConfigValue[string](module, "string_option")
+	// Load the module
+	loader := module.LoadModule("test", nil)
+	dict, err := loader()
 	if err != nil {
-		t.Fatalf("Failed to get string_option: %v", err)
-	}
-	if got, want := strValue, "starlark_string"; got != want {
-		t.Errorf("string_option = %q, want %q", got, want)
+		t.Fatalf("Module loading failed: %v", err)
 	}
 
-	intValue, err := base.GetConfigValue[int](module, "int_option")
+	// Get the setter function
+	setValidated, ok := dict["set_validated"].(starlark.Callable)
+	if !ok {
+		t.Fatal("set_validated should be a Callable")
+	}
+
+	// Try setting a valid value
+	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(10)}, nil)
 	if err != nil {
-		t.Fatalf("Failed to get int_option: %v", err)
-	}
-	if got, want := intValue, 100; got != want {
-		t.Errorf("int_option = %d, want %d", got, want)
+		t.Errorf("Failed to set a valid value: %v", err)
 	}
 
-	boolValue, err := base.GetConfigValue[bool](module, "bool_option")
-	if err != nil {
-		t.Fatalf("Failed to get bool_option: %v", err)
-	}
-	if got, want := boolValue, false; got != want {
-		t.Errorf("bool_option = %v, want %v", got, want)
-	}
-
-	// Verify the secret option cannot be retrieved
-	_, err = base.GetConfigValue[string](module, "secret_option")
+	// Try setting an invalid value
+	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(-10)}, nil)
 	if err == nil {
-		t.Error("Expected error when retrieving secret option, got nil")
+		t.Error("Expected error when setting invalid value, got nil")
 	}
 
-	// Force-retrieve the secret value using the module's internal option
-	retrievedOpt, err := module.GetConfigOption("secret_option")
-	if err != nil {
-		t.Fatalf("Failed to get secret_option: %v", err)
+	// Try calling with wrong number of arguments
+	_, err = setValidated.CallInternal(nil, starlark.Tuple{}, nil)
+	if err == nil {
+		t.Error("Expected error when calling with no arguments, got nil")
 	}
 
-	// Check that the option was correctly set to be secret
-	if !retrievedOpt.IsSecret() {
-		t.Error("secret_option should be marked as secret")
+	// Try calling with extra named arguments
+	kwargs := []starlark.Tuple{
+		{starlark.String("extra"), starlark.String("arg")},
+	}
+	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(5)}, kwargs)
+	if err == nil {
+		t.Error("Expected error when calling with extra named arguments, got nil")
 	}
 }
 

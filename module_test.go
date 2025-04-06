@@ -551,7 +551,7 @@ func TestHelperFunctions(t *testing.T) {
 	// Test NewConfigurableModuleWithOptions
 	t.Run("NewConfigurableModuleWithOptions", func(t *testing.T) {
 		// Create a module with options
-		stringOption := base.NewConfigOption("default_string").WithDescription("A string option")
+		stringOption := base.NewConfigOption("default_string").WithDescription("A string option").WithValue("string value")
 
 		// Test successful creation with multiple options
 		module, err := base.NewConfigurableModuleWithOptions(
@@ -571,8 +571,8 @@ func TestHelperFunctions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfigValue for string_opt failed: %v", err)
 		}
-		if stringVal != "default_string" {
-			t.Errorf("Expected string_opt value 'default_string', got '%s'", stringVal)
+		if stringVal != "string value" {
+			t.Errorf("Expected string_opt value 'string value', got '%s'", stringVal)
 		}
 
 		intVal, err := base.GetConfigValue[int](module, "int_opt")
@@ -607,6 +607,393 @@ func TestHelperFunctions(t *testing.T) {
 		err = invalidModule.Initialize()
 		if err == nil {
 			t.Fatal("Expected invalidModule.Initialize() to fail with invalid option")
+		}
+	})
+}
+
+// Test ListConfigs method
+func TestListConfigs(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// Add various config options
+	module.SetConfigOption("string_opt", base.NewConfigOption("string value").WithDescription("A string option").WithValue("string value"))
+	module.SetConfigOption("int_opt", base.NewConfigOption(42).WithDescription("An integer option"))
+	module.SetConfigOption("bool_opt", base.NewConfigOption(true).WithDescription("A boolean option"))
+	module.SetConfigOption("secret_opt", base.NewConfigOption("secret").SetSecret(true).WithDescription("A secret option"))
+	module.SetConfigOption("required_opt", base.NewConfigOption("").SetRequired(true).WithDescription("A required option").WithValue("required value"))
+
+	// Test ListConfigs
+	configs := module.ListConfigs()
+
+	// Verify all configs are present
+	expectedConfigs := []string{"string_opt", "int_opt", "bool_opt", "secret_opt", "required_opt"}
+	for _, name := range expectedConfigs {
+		if _, exists := configs[name]; !exists {
+			t.Errorf("Expected config '%s' to be present in ListConfigs result", name)
+		}
+	}
+
+	// Check specific properties
+	if configs["string_opt"]["description"] != "A string option" {
+		t.Errorf("Expected description 'A string option', got '%v'", configs["string_opt"]["description"])
+	}
+
+	if configs["bool_opt"]["value"] != true {
+		t.Errorf("Expected boolean value true, got %v", configs["bool_opt"]["value"])
+	}
+
+	if configs["required_opt"]["required"] != true {
+		t.Errorf("Expected required_opt to have required=true, got %v", configs["required_opt"]["required"])
+	}
+
+	if configs["secret_opt"]["secret"] != true {
+		t.Errorf("Expected secret_opt to have secret=true, got %v", configs["secret_opt"]["secret"])
+	}
+
+	// Secret configs should not expose their values
+	if val, exists := configs["secret_opt"]["value"]; exists {
+		t.Errorf("Secret config should not expose its value, but got %v", val)
+	}
+}
+
+// Test GetConfigOption more extensively
+func TestGetConfigOption(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// Test getting a non-existent option
+	_, err := module.GetConfigOption("nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent config, got nil")
+	}
+	if !errors.Is(err, base.ErrConfigNotSet) {
+		t.Errorf("Expected ErrConfigNotSet, got %v", err)
+	}
+
+	// Add some config options
+	stringOpt := base.NewConfigOption("string value").WithDescription("A string option").WithValue("string value")
+	module.SetConfigOption("string_opt", stringOpt)
+
+	// Get the option and verify it's the same instance
+	retrievedOpt, err := module.GetConfigOption("string_opt")
+	if err != nil {
+		t.Fatalf("GetConfigOption failed: %v", err)
+	}
+
+	// Check if the retrieved option has the correct properties
+	if retrievedOpt.GetName() != "string_opt" {
+		t.Errorf("Expected name 'string_opt', got '%s'", retrievedOpt.GetName())
+	}
+
+	if !retrievedOpt.HasValue() {
+		t.Error("Expected option to have a value")
+	}
+
+	// Check that we can get the actual option with type information
+	typedOpt, ok := retrievedOpt.(*base.ConfigOption[string])
+	if !ok {
+		t.Fatalf("Retrieved option is not of expected type *base.ConfigOption[string]")
+	}
+
+	// Verify we can get the value through the typed option
+	val, err := typedOpt.GetValue()
+	if err != nil {
+		t.Fatalf("GetValue failed: %v", err)
+	}
+	if val != "string value" {
+		t.Errorf("Expected value 'string value', got '%s'", val)
+	}
+}
+
+// Test GetConfigValue function more extensively
+func TestGetConfigValue(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// Test getting a non-existent config
+	_, err := base.GetConfigValue[string](module, "nonexistent")
+	if err == nil {
+		t.Error("Expected error when getting non-existent config, got nil")
+	}
+	if !errors.Is(err, base.ErrConfigNotSet) {
+		t.Errorf("Expected ErrConfigNotSet, got %v", err)
+	}
+
+	// Test getting a config with incorrect type
+	module.SetConfigOption("int_config", base.NewConfigOption(42))
+	_, err = base.GetConfigValue[string](module, "int_config")
+	if err == nil {
+		t.Error("Expected error when getting config with wrong type, got nil")
+	}
+	if errors.Is(err, base.ErrConfigNotSet) {
+		t.Error("Error should not be ErrConfigNotSet for type mismatch")
+	}
+
+	// Test getting a config with correct type
+	intVal, err := base.GetConfigValue[int](module, "int_config")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if intVal != 42 {
+		t.Errorf("Expected value 42, got %d", intVal)
+	}
+
+	// Test with a getter function
+	dynamicValue := "initial"
+	module.SetConfigOption("dynamic_config", base.NewConfigOption("").WithGetter(func() string {
+		return dynamicValue
+	}))
+
+	// Get the initial value
+	strVal, err := base.GetConfigValue[string](module, "dynamic_config")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if strVal != "initial" {
+		t.Errorf("Expected value 'initial', got '%s'", strVal)
+	}
+
+	// Change the dynamic value and get it again
+	dynamicValue = "updated"
+	strVal, err = base.GetConfigValue[string](module, "dynamic_config")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if strVal != "updated" {
+		t.Errorf("Expected updated value 'updated', got '%s'", strVal)
+	}
+
+	// Test with complex types
+	module.SetConfigOption("slice_config", base.NewConfigOption([]string{"a", "b", "c"}))
+	sliceVal, err := base.GetConfigValue[[]string](module, "slice_config")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if len(sliceVal) != 3 || sliceVal[0] != "a" || sliceVal[1] != "b" || sliceVal[2] != "c" {
+		t.Errorf("Expected slice [a b c], got %v", sliceVal)
+	}
+
+	// Test with map type
+	module.SetConfigOption("map_config", base.NewConfigOption(map[string]int{"a": 1, "b": 2}))
+	mapVal, err := base.GetConfigValue[map[string]int](module, "map_config")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if len(mapVal) != 2 || mapVal["a"] != 1 || mapVal["b"] != 2 {
+		t.Errorf("Expected map {a:1, b:2}, got %v", mapVal)
+	}
+}
+
+// Test NewConfigurableModule more extensively
+func TestNewConfigurableModule(t *testing.T) {
+	// Test the basic constructor
+	module := base.NewConfigurableModule()
+	if module == nil {
+		t.Fatal("NewConfigurableModule should not return nil")
+	}
+
+	// Ensure the configs map is initialized
+	if module.ListConfigs() == nil {
+		t.Error("Configs map should be initialized")
+	}
+
+	// Test constructor with options
+	moduleWithOptions, err := base.NewConfigurableModuleWithOptions(
+		base.WithConfigOption("string_opt", base.NewConfigOption("value")),
+		base.WithConfigValue("int_opt", 42),
+	)
+	if err != nil {
+		t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+	}
+	if moduleWithOptions == nil {
+		t.Fatal("NewConfigurableModuleWithOptions should not return nil")
+	}
+
+	// Verify the options were set
+	configs := moduleWithOptions.ListConfigs()
+	if _, exists := configs["string_opt"]; !exists {
+		t.Error("string_opt should exist")
+	}
+	if _, exists := configs["int_opt"]; !exists {
+		t.Error("int_opt should exist")
+	}
+
+	// Test constructor with failing option
+	_, err = base.NewConfigurableModuleWithOptions(
+		base.WithConfigOption("string_opt", base.NewConfigOption("value")),
+		func(m *base.ConfigurableModule) error {
+			return errors.New("test error")
+		},
+	)
+	if err == nil {
+		t.Error("Expected error when option fails, got nil")
+	}
+	if err != nil && err.Error() != "failed to apply module option: test error" {
+		t.Errorf("Expected specific error message, got: %v", err)
+	}
+}
+
+// Test SetTypedConfigOption more extensively
+func TestSetTypedConfigOption(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// Test setting a strongly-typed option
+	stringOpt := base.NewConfigOption("value")
+	err := base.SetTypedConfigOption(module, "string_opt", stringOpt)
+	if err != nil {
+		t.Fatalf("SetTypedConfigOption failed: %v", err)
+	}
+
+	// Verify the option was set correctly
+	retrievedOpt, err := module.GetConfigOption("string_opt")
+	if err != nil {
+		t.Fatalf("GetConfigOption failed: %v", err)
+	}
+	if retrievedOpt.GetName() != "string_opt" {
+		t.Errorf("Expected option name 'string_opt', got '%s'", retrievedOpt.GetName())
+	}
+
+	// Test the typed helper function with WithTypedConfigOption
+	intModule := base.NewConfigurableModule()
+	intOpt := base.NewConfigOption(42)
+	err = base.WithTypedConfigOption("int_opt", intOpt)(intModule)
+	if err != nil {
+		t.Fatalf("WithTypedConfigOption failed: %v", err)
+	}
+
+	// Verify the option was set correctly
+	intVal, err := base.GetConfigValue[int](intModule, "int_opt")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if intVal != 42 {
+		t.Errorf("Expected value 42, got %d", intVal)
+	}
+
+	// Test with an already initialized module
+	initializedModule := base.NewConfigurableModule()
+	err = initializedModule.Initialize()
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	err = base.SetTypedConfigOption(initializedModule, "too_late", base.NewConfigOption("value"))
+	if !errors.Is(err, base.ErrModuleAlreadyInitialized) {
+		t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
+	}
+}
+
+// Test SetConfigGetter function more extensively
+func TestSetConfigGetter(t *testing.T) {
+	// Test setting a config getter on a new module
+	t.Run("BasicGetter", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Set a simple getter
+		dynamicValue := "initial"
+		err := base.SetConfigGetter(module, "dynamic", func() string {
+			return dynamicValue
+		})
+		if err != nil {
+			t.Fatalf("SetConfigGetter failed: %v", err)
+		}
+
+		// Check that the getter works
+		val, err := base.GetConfigValue[string](module, "dynamic")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+		if val != "initial" {
+			t.Errorf("Expected 'initial', got '%s'", val)
+		}
+
+		// Change the dynamic value and check again
+		dynamicValue = "updated"
+		val, err = base.GetConfigValue[string](module, "dynamic")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+		if val != "updated" {
+			t.Errorf("Expected 'updated', got '%s'", val)
+		}
+	})
+
+	// Test setting a getter on an existing option
+	t.Run("ExistingOption", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Create an option first
+		module.SetConfigOption("existing", base.NewConfigOption("initial value"))
+
+		// Set a getter on the existing option
+		dynamicValue := "dynamic"
+		err := base.SetConfigGetter(module, "existing", func() string {
+			return dynamicValue
+		})
+		if err != nil {
+			t.Fatalf("SetConfigGetter failed: %v", err)
+		}
+
+		// By default, explicit value should take precedence over getter
+		val, err := base.GetConfigValue[string](module, "existing")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+		if val != "dynamic" {
+			t.Errorf("Expected 'dynamic', got '%s'", val)
+		}
+
+		// Get the option and change its priority
+		opt, err := module.GetConfigOption("existing")
+		if err != nil {
+			t.Fatalf("GetConfigOption failed: %v", err)
+		}
+
+		typedOpt, ok := opt.(*base.ConfigOption[string])
+		if !ok {
+			t.Fatalf("Failed to cast option to correct type")
+		}
+
+		typedOpt.PreferGetter()
+
+		// Now the getter should take precedence
+		val, err = base.GetConfigValue[string](module, "existing")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+		if val != "dynamic" {
+			t.Errorf("Expected 'dynamic', got '%s'", val)
+		}
+	})
+
+	// Test with type mismatch
+	t.Run("TypeMismatch", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Create an option with int type
+		module.SetConfigOption("int_opt", base.NewConfigOption(42))
+
+		// Try to set a string getter - this should fail
+		err := base.SetConfigGetter(module, "int_opt", func() string {
+			return "string"
+		})
+		if err == nil {
+			t.Error("Expected error when setting getter with wrong type, got nil")
+		}
+	})
+
+	// Test with initialized module
+	t.Run("InitializedModule", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+		err := module.Initialize()
+		if err != nil {
+			t.Fatalf("Initialize failed: %v", err)
+		}
+
+		// Try to set a getter on initialized module
+		err = base.SetConfigGetter(module, "too_late", func() string {
+			return "value"
+		})
+		if !errors.Is(err, base.ErrModuleAlreadyInitialized) {
+			t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
 		}
 	})
 }
