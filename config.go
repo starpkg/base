@@ -3,7 +3,11 @@ package base
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
+
+	"github.com/1set/starlet/dataconv"
+	"go.starlark.net/starlark"
 )
 
 // ConfigGetter is a function type that returns a value of type T.
@@ -212,4 +216,121 @@ func (o *ConfigOption[T]) hasGetter() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.getter != nil
+}
+
+// Implement ConfigOptionInterface methods
+
+// GetName returns the name of the configuration option.
+func (o *ConfigOption[T]) GetName() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.Name
+}
+
+// SetName sets the name of the configuration option.
+func (o *ConfigOption[T]) SetName(name string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Name = name
+}
+
+// HasSetValue returns whether the configuration option has a value set.
+func (o *ConfigOption[T]) HasSetValue() bool {
+	return o.hasSetValue()
+}
+
+// HasGetter returns whether the configuration option has a getter.
+func (o *ConfigOption[T]) HasGetter() bool {
+	return o.hasGetter()
+}
+
+// IsDefault returns whether the configuration option has the default value.
+func (o *ConfigOption[T]) IsDefault() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var zero T
+	return reflect.DeepEqual(o.Default, zero)
+}
+
+// GetDescription returns the description of the configuration option.
+func (o *ConfigOption[T]) GetDescription() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.Description
+}
+
+// GetInfo returns information about the configuration option.
+func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	info := map[string]interface{}{
+		"name":        o.Name,
+		"description": o.Description,
+		"required":    o.isRequired,
+		"secret":      o.isSecret,
+		"has_value":   o.hasValue,
+		"has_getter":  o.getter != nil,
+	}
+
+	// Only include values for non-secret configs
+	if !o.isSecret {
+		o.mu.RUnlock()
+		val, err := o.getValue()
+		o.mu.RLock()
+		if err == nil {
+			info["value"] = val
+		}
+	}
+
+	return info
+}
+
+// ValidValue validates whether a starlark value can be properly set to this option.
+func (o *ConfigOption[T]) ValidValue(v starlark.Value) error {
+	// Convert to Go value
+	gv, err := dataconv.Unmarshal(v)
+	if err != nil {
+		return err
+	}
+
+	// Check type
+	_, ok := gv.(T)
+	if !ok {
+		var zero T
+		return fmt.Errorf("value type mismatch, expected %T, got %T", zero, gv)
+	}
+
+	return nil
+}
+
+// SetValueFromStarlark sets the configuration option from a starlark value.
+func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
+	// Convert to Go value
+	gv, err := dataconv.Unmarshal(v)
+	if err != nil {
+		return err
+	}
+
+	// Check type
+	vt, ok := gv.(T)
+	if !ok {
+		var zero T
+		return fmt.Errorf("value type mismatch, expected %T, got %T", zero, gv)
+	}
+
+	// Set value
+	return o.setValue(vt)
+}
+
+// GetStarlarkValue returns the configuration value as a starlark value.
+func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
+	// Get configuration value
+	value, err := o.getValue()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to Starlark value
+	return dataconv.Marshal(value)
 }
