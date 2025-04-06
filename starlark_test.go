@@ -45,9 +45,7 @@ func TestStarlarkIntegration(t *testing.T) {
 
 	// Use starlet to execute the script
 	script := `
-load("test_module", "get_string_option", "get_int_option", "get_bool_option", 
-                  "set_string_option", "set_int_option", "set_bool_option", 
-                  "set_secret_option", "custom_func")
+load("test_module", "get_string_option", "get_int_option", "get_bool_option", "set_string_option", "set_int_option", "set_bool_option", "set_secret_option", "custom_func")
 
 # Get current values
 initial_string = get_string_option()
@@ -158,8 +156,7 @@ func TestStarlarkEdgeCases(t *testing.T) {
 
 	// Use starlet to execute the script
 	script := `
-load("test_module", "get_array_option", "get_map_option", 
-                  "set_array_option", "set_map_option")
+load("test_module", "get_array_option", "get_map_option", "set_array_option", "set_map_option")
 
 # Set array with different length
 set_array_option(["x", "y", "z", "w"])
