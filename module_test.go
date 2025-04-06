@@ -155,7 +155,7 @@ func TestConfigurableModule(t *testing.T) {
 		module := base.NewConfigurableModule()
 
 		// Add a required config without a value
-		module.SetConfigOption("required", base.NewConfigOption("").Required())
+		module.SetConfigOption("required", base.NewConfigOption("").SetRequired(true))
 
 		// Initialize should fail
 		err := module.Initialize()
@@ -184,7 +184,7 @@ func TestConfigurableModule(t *testing.T) {
 
 		// Add a couple config options
 		opt1 := base.NewConfigOption("value1")
-		opt2 := base.NewConfigOption("value2").Secret()
+		opt2 := base.NewConfigOption("value2").SetSecret(true)
 		module.SetConfigOption("option1", opt1)
 		module.SetConfigOption("option2", opt2)
 
@@ -279,7 +279,7 @@ func TestConfigurableModule(t *testing.T) {
 
 		// Add a couple config options
 		opt1 := base.NewConfigOption("value1").WithDescription("Description 1")
-		opt2 := base.NewConfigOption("value2").WithDescription("Description 2").Secret()
+		opt2 := base.NewConfigOption("value2").WithDescription("Description 2").SetSecret(true)
 		module.SetConfigOption("option1", opt1)
 		module.SetConfigOption("option2", opt2)
 
@@ -312,6 +312,59 @@ func TestConfigurableModule(t *testing.T) {
 		}
 		if _, exists := config2["value"]; exists {
 			t.Error("Secret config should not include value in info")
+		}
+	})
+
+	// Test initialization with getter vs. explicitly set value validation
+	t.Run("InitializeGetterVsExplicitValue", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Create a validator that rejects negative numbers
+		validator := func(val int) error {
+			if val < 0 {
+				return fmt.Errorf("value must be non-negative")
+			}
+			return nil
+		}
+
+		// First test: using a getter that returns an invalid value
+		// This should NOT fail validation during initialize since getter values aren't validated
+		invalidGetter := func() int {
+			return -10 // This would fail validation if validated
+		}
+
+		invalidGetterOpt := base.NewConfigOption(0).
+			WithValidator(validator).
+			WithGetter(invalidGetter)
+
+		err := base.SetTypedConfigOption(module, "invalid_getter", invalidGetterOpt)
+		if err != nil {
+			t.Fatalf("SetTypedConfigOption failed: %v", err)
+		}
+
+		// Initialize should succeed because getter values aren't validated during initialization
+		err = module.Initialize()
+		if err != nil {
+			t.Fatalf("Initialize should succeed with invalid getter value: %v", err)
+		}
+
+		// Second test: using an explicitly set invalid value
+		// This should fail validation during initialize
+		module = base.NewConfigurableModule() // Reset module
+
+		invalidValueOpt := base.NewConfigOption(0).
+			WithValidator(validator).
+			WithValue(-10) // Explicitly set invalid value
+
+		err = base.SetTypedConfigOption(module, "invalid_value", invalidValueOpt)
+		if err != nil {
+			t.Fatalf("SetTypedConfigOption failed: %v", err)
+		}
+
+		// Initialize should fail because explicitly set values are validated
+		err = module.Initialize()
+		if err == nil {
+			t.Fatal("Initialize should fail with invalid explicitly set value")
 		}
 	})
 }

@@ -40,7 +40,7 @@ func setupModule() *base.ConfigurableModule {
 			}
 			return nil
 		}).
-		Required()
+		SetRequired(true)
 	base.SetTypedConfigOption(module, "bool_option", boolOption)
 	base.SetConfigValue(module, "bool_option", true) // Set to satisfy validation
 
@@ -53,12 +53,10 @@ func setupModule() *base.ConfigurableModule {
 	base.SetConfigValue(module, "complex_option", complexConfig)
 
 	// Secret config (won't be accessible from Starlark)
-	base.SetConfigValue(module, "secret_option", "secret-value")
-	secretOption, err := module.GetConfigOption("secret_option")
-	if err != nil {
-		log.Fatalf("Failed to get secret_option: %v", err)
-	}
-	secretOption.SetSecret(true)
+	secretOpt := base.NewConfigOption("secret-value").
+		WithName("secret_option").
+		SetSecret(true)
+	base.SetTypedConfigOption(module, "secret_option", secretOpt)
 
 	// Dynamic config with getter function
 	base.SetConfigGetter(module, "current_time", func() string {

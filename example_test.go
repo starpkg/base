@@ -57,7 +57,7 @@ func Example_moduleUsage() {
 		base.NewConfigOption(false).
 			WithDescription("Whether to enable debug mode").
 			WithValue(false).
-			Required(),
+			SetRequired(true),
 	)
 
 	// Array option
@@ -84,7 +84,7 @@ func Example_moduleUsage() {
 		"api_key",
 		base.NewConfigOption("default-key").
 			WithDescription("API Key for authentication").
-			Secret(),
+			SetSecret(true),
 	)
 
 	// Dynamic option with getter function
@@ -223,7 +223,7 @@ func Example_complexModule() {
 				}
 				return nil
 			}).
-			Required(),
+			SetRequired(true),
 	)
 
 	// Authentication options
@@ -426,7 +426,7 @@ func Example_multipleModules() {
 	base.SetConfigValue(dbModule, "username", "user")
 
 	// Set password as secret option
-	passwordOpt := base.NewConfigOption("").WithValue("securepassword").Secret()
+	passwordOpt := base.NewConfigOption("").WithValue("securepassword").SetSecret(true)
 	base.SetTypedConfigOption(dbModule, "password", passwordOpt)
 
 	base.SetConfigValue(dbModule, "database", "myapp")

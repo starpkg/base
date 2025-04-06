@@ -30,7 +30,7 @@ func TestStarlarkIntegration(t *testing.T) {
 	// Secret option
 	secretOpt := base.NewConfigOption("secret_value").
 		WithDescription("A secret option").
-		Secret()
+		SetSecret(true)
 	base.SetTypedConfigOption(module, "secret_option", secretOpt)
 
 	// Add a custom function

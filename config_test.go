@@ -120,7 +120,7 @@ func TestConfigOption(t *testing.T) {
 			WithName("option_name").
 			WithDescription("An option with a value").
 			WithValue("chain_value").
-			Required()
+			SetRequired(true)
 
 		if !chainedOpt.HasValue() {
 			t.Error("HasValue should return true after using WithValue")
@@ -191,7 +191,7 @@ func TestConfigOption(t *testing.T) {
 
 	// Test secret
 	t.Run("Secret", func(t *testing.T) {
-		opt := base.NewConfigOption("secret_value").Secret()
+		opt := base.NewConfigOption("secret_value").SetSecret(true)
 
 		// Check that secret is set
 		if !opt.IsSecret() {
@@ -213,7 +213,7 @@ func TestConfigOption(t *testing.T) {
 
 	// Test required
 	t.Run("Required", func(t *testing.T) {
-		opt := base.NewConfigOption("").Required()
+		opt := base.NewConfigOption("").SetRequired(true)
 
 		// Check that required is set
 		if !opt.IsRequired() {
@@ -261,7 +261,7 @@ func TestConfigOption(t *testing.T) {
 		opt := base.NewConfigOption("test_val").
 			WithName("test_name").
 			WithDescription("Test description").
-			Required()
+			SetRequired(true)
 
 		info := opt.GetInfo()
 
@@ -282,7 +282,7 @@ func TestConfigOption(t *testing.T) {
 		}
 
 		// Test that secret values don't expose their values
-		secretOpt := base.NewConfigOption("secret").Secret()
+		secretOpt := base.NewConfigOption("secret").SetSecret(true)
 		secretInfo := secretOpt.GetInfo()
 
 		if secretInfo["secret"] != true {

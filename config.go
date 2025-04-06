@@ -102,15 +102,18 @@ func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOpt
 	return o
 }
 
-// Required marks the configuration option as required.
-func (o *ConfigOption[T]) Required() *ConfigOption[T] {
-	o.isRequired = true
+// SetRequired sets whether the configuration option is required.
+// By default, an option is not required.
+func (o *ConfigOption[T]) SetRequired(required bool) *ConfigOption[T] {
+	o.isRequired = required
 	return o
 }
 
-// Secret marks the configuration option as a secret.
-func (o *ConfigOption[T]) Secret() *ConfigOption[T] {
-	o.isSecret = true
+// SetSecret sets whether the configuration option is secret.
+// Secret options cannot be retrieved through GetValue.
+// By default, an option is not secret.
+func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
+	o.isSecret = secret
 	return o
 }
 
@@ -158,15 +161,11 @@ func (o *ConfigOption[T]) SetValue(value T) error {
 	return nil
 }
 
-// SetSecret sets whether the configuration option is secret.
-func (o *ConfigOption[T]) SetSecret(secret bool) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.isSecret = secret
-}
-
 // Validate validates the current value if a validator is set.
-// Returns nil if no validator is set or the validation passes.
+// This method ONLY validates the explicitly set value (via SetValue or WithValue),
+// and does NOT validate values returned from a getter function.
+// Validation only occurs if both a validator is set AND a value has been explicitly set.
+// Returns nil if no validator is set, no value has been set, or the validation passes.
 func (o *ConfigOption[T]) Validate() error {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -176,7 +175,8 @@ func (o *ConfigOption[T]) Validate() error {
 		return nil
 	}
 
-	// Run the validator on the current value
+	// Run the validator on the explicitly set value
+	// Note: This does NOT validate values from getter functions
 	if err := o.validator(o.value); err != nil {
 		return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
 	}

@@ -15,7 +15,6 @@ type ConfigOptionInterface interface {
 	SetName(name string)
 	IsRequired() bool
 	IsSecret() bool
-	SetSecret(secret bool)
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
@@ -61,6 +60,11 @@ func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInt
 }
 
 // Initialize finalizes the module configuration and makes it immutable.
+// During initialization, it:
+// 1. Checks that all required options either have a value, a getter, or a default
+// 2. Validates all explicitly set values (via SetValue or WithValue)
+//    Note: Values from getter functions are NOT validated during initialization
+// Returns an error if any required configs are missing or if any value fails validation.
 func (m *ConfigurableModule) Initialize() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -75,7 +79,8 @@ func (m *ConfigurableModule) Initialize() error {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
 
-		// Validate all options, including those set with WithValue which bypassed validation
+		// Validate all options with explicitly set values (including those set with WithValue)
+		// Note: This only validates the explicitly set values, not values from getters
 		if err := option.Validate(); err != nil {
 			return fmt.Errorf("validation failed for option '%s': %w", name, err)
 		}
