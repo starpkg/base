@@ -63,15 +63,15 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	}
 }
 
+// Builder methods
+
 // WithName sets the name of the configuration option.
-// The name is used as a unique identifier when registering the option with a ConfigurableModule.
 func (o *ConfigOption[T]) WithName(name string) *ConfigOption[T] {
 	o.Name = name
 	return o
 }
 
 // WithDescription adds a description to the configuration option.
-// The description is used for documentation and displayed when listing configurations.
 func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	o.Description = desc
 	return o
@@ -101,59 +101,46 @@ func (o *ConfigOption[T]) Secret() *ConfigOption[T] {
 	return o
 }
 
-// PreferGetter configures the option to prefer dynamic values from the getter
-// even when a direct value has been set.
+// PreferGetter configures the option to prefer dynamic values from the getter.
 func (o *ConfigOption[T]) PreferGetter() *ConfigOption[T] {
 	o.valuePriority = PriorityGetter
 	return o
 }
 
-// PreferSetValue configures the option to prefer explicitly set values
-// over dynamic values from the getter (this is the default behavior).
+// PreferSetValue configures the option to prefer explicitly set values (this is the default behavior).
 func (o *ConfigOption[T]) PreferSetValue() *ConfigOption[T] {
 	o.valuePriority = PrioritySetValue
 	return o
 }
 
+// Internal methods
+
 // resolveValue returns the current value based on priority settings.
-// This is an internal helper used by both getValue and getSecretValue.
-// It must be called with the mutex already locked.
 func (o *ConfigOption[T]) resolveValue() T {
-	switch o.valuePriority {
-	case PriorityGetter:
-		// Check getter first, then fall back to set value, then default
+	if o.valuePriority == PriorityGetter {
 		if o.getter != nil {
 			return o.getter()
 		}
 		if o.hasValue {
 			return o.value
-		}
-		return o.Default
-
-	case PrioritySetValue:
-		// Check set value first, then fall back to getter, then default
-		if o.hasValue {
-			return o.value
-		}
-		if o.getter != nil {
-			return o.getter()
-		}
-		return o.Default
-
-	default:
-		// Should never happen, but fallback to default case
-		if o.hasValue {
-			return o.value
-		}
-		if o.getter != nil {
-			return o.getter()
 		}
 		return o.Default
 	}
+
+	// Default is PrioritySetValue
+	if o.hasValue {
+		return o.value
+	}
+	if o.getter != nil {
+		return o.getter()
+	}
+	return o.Default
 }
 
-// getValue returns the current value of the configuration option.
-func (o *ConfigOption[T]) getValue() (T, error) {
+// Public methods
+
+// GetValue returns the current value of the configuration option.
+func (o *ConfigOption[T]) GetValue() (T, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
@@ -166,16 +153,8 @@ func (o *ConfigOption[T]) getValue() (T, error) {
 	return o.resolveValue(), nil
 }
 
-// getSecretValue returns the value even if it's secret (for internal use only).
-func (o *ConfigOption[T]) getSecretValue() T {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
-	return o.resolveValue()
-}
-
-// setValue sets the value of the configuration option.
-func (o *ConfigOption[T]) setValue(value T) error {
+// SetValue sets the value of the configuration option.
+func (o *ConfigOption[T]) SetValue(value T) error {
 	if o.validator != nil {
 		if err := o.validator(value); err != nil {
 			return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
@@ -188,6 +167,22 @@ func (o *ConfigOption[T]) setValue(value T) error {
 	o.value = value
 	o.hasValue = true
 	return nil
+}
+
+// ConfigOptionInterface implementation
+
+// GetName returns the name of the configuration option.
+func (o *ConfigOption[T]) GetName() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.Name
+}
+
+// SetName sets the name of the configuration option.
+func (o *ConfigOption[T]) SetName(name string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.Name = name
 }
 
 // IsRequired returns whether the configuration option is required.
@@ -204,44 +199,18 @@ func (o *ConfigOption[T]) IsSecret() bool {
 	return o.isSecret
 }
 
-// hasSetValue returns whether the configuration option has a value set.
-func (o *ConfigOption[T]) hasSetValue() bool {
+// HasValue returns whether the configuration option has a value set.
+func (o *ConfigOption[T]) HasValue() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.hasValue
 }
 
-// hasGetter returns whether the configuration option has a getter.
-func (o *ConfigOption[T]) hasGetter() bool {
+// HasGetter returns whether the configuration option has a getter.
+func (o *ConfigOption[T]) HasGetter() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.getter != nil
-}
-
-// Implement ConfigOptionInterface methods
-
-// GetName returns the name of the configuration option.
-func (o *ConfigOption[T]) GetName() string {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.Name
-}
-
-// SetName sets the name of the configuration option.
-func (o *ConfigOption[T]) SetName(name string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.Name = name
-}
-
-// HasSetValue returns whether the configuration option has a value set.
-func (o *ConfigOption[T]) HasSetValue() bool {
-	return o.hasSetValue()
-}
-
-// HasGetter returns whether the configuration option has a getter.
-func (o *ConfigOption[T]) HasGetter() bool {
-	return o.hasGetter()
 }
 
 // IsDefault returns whether the configuration option has the default value.
@@ -252,17 +221,9 @@ func (o *ConfigOption[T]) IsDefault() bool {
 	return reflect.DeepEqual(o.Default, zero)
 }
 
-// GetDescription returns the description of the configuration option.
-func (o *ConfigOption[T]) GetDescription() string {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return o.Description
-}
-
 // GetInfo returns information about the configuration option.
 func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	o.mu.RLock()
-	defer o.mu.RUnlock()
 
 	info := map[string]interface{}{
 		"name":        o.Name,
@@ -276,15 +237,18 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	// Only include values for non-secret configs
 	if !o.isSecret {
 		o.mu.RUnlock()
-		val, err := o.getValue()
+		val, err := o.GetValue()
 		o.mu.RLock()
 		if err == nil {
 			info["value"] = val
 		}
 	}
 
+	o.mu.RUnlock()
 	return info
 }
+
+// Starlark integration
 
 // ValidValue validates whether a starlark value can be properly set to this option.
 func (o *ConfigOption[T]) ValidValue(v starlark.Value) error {
@@ -320,17 +284,24 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 	}
 
 	// Set value
-	return o.setValue(vt)
+	return o.SetValue(vt)
 }
 
 // GetStarlarkValue returns the configuration value as a starlark value.
 func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 	// Get configuration value
-	value, err := o.getValue()
+	value, err := o.GetValue()
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert to Starlark value
 	return dataconv.Marshal(value)
+}
+
+// SetSecret sets whether the configuration option is secret.
+func (o *ConfigOption[T]) SetSecret(secret bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.isSecret = secret
 }
