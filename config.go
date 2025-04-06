@@ -31,6 +31,7 @@ const (
 // to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
 type ConfigOption[T any] struct {
 	// Default is the default value for the configuration.
+	// Validator will not be called on the default value.
 	Default T
 
 	// Name is the unique identifier for this configuration option.
@@ -77,7 +78,7 @@ func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	return o
 }
 
-// WithValidator adds a validator to the configuration option.
+// WithValidator adds a validator to the configuration option, which is called when the value is set.
 func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
 	o.validator = validator
 	return o
