@@ -29,6 +29,10 @@ type ConfigOption[T any] struct {
 	// Default is the default value for the configuration.
 	Default T
 
+	// Name is the unique identifier for this configuration option.
+	// This is used when registering the option with a ConfigurableModule.
+	Name string
+
 	// Description is a human-readable description of the configuration.
 	// This is used for documentation and displayed when listing configurations.
 	// It's recommended to provide a clear, concise explanation of what the config does.
@@ -53,6 +57,13 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 		Default:       defaultValue,
 		valuePriority: PrioritySetValue, // Default to prioritizing explicitly set values
 	}
+}
+
+// WithName sets the name of the configuration option.
+// The name is used as a unique identifier when registering the option with a ConfigurableModule.
+func (o *ConfigOption[T]) WithName(name string) *ConfigOption[T] {
+	o.Name = name
+	return o
 }
 
 // WithDescription adds a description to the configuration option.

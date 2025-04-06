@@ -52,6 +52,11 @@ func (m *ConfigurableModule[T]) SetConfigOption(name string, option *ConfigOptio
 		return err
 	}
 
+	// Set the Name field if it's not already set
+	if option.Name == "" {
+		option.Name = name
+	}
+
 	m.configs[name] = option
 	return nil
 }
@@ -68,9 +73,14 @@ func (m *ConfigurableModule[T]) SetConfig(name string, getter ConfigGetter[T]) e
 	option, exists := m.configs[name]
 	if !exists {
 		var zero T
-		option = NewConfigOption(zero).WithGetter(getter)
+		option = NewConfigOption(zero).WithName(name).WithGetter(getter)
 		m.configs[name] = option
 		return nil
+	}
+
+	// Set the Name field if it's not already set
+	if option.Name == "" {
+		option.Name = name
 	}
 
 	option.WithGetter(getter)
@@ -87,10 +97,17 @@ func (m *ConfigurableModule[T]) SetConfigValue(name string, value T) error {
 			return err
 		}
 
-		option = NewConfigOption(value)
+		option = NewConfigOption(value).WithName(name)
 		m.configs[name] = option
 		m.mu.Unlock()
 		return nil
+	}
+
+	// Set the Name field if it's not already set
+	if option.Name == "" {
+		m.mu.Lock()
+		option.Name = name
+		m.mu.Unlock()
 	}
 
 	return option.setValue(value)
@@ -103,12 +120,18 @@ func (m *ConfigurableModule[T]) Initialize() error {
 
 	// Check if all required configs are set
 	for name, option := range m.configs {
+		// Make sure name is set
+		if option.Name == "" {
+			option.Name = name
+		}
+
 		if option.IsRequired() {
 			// For required options, ensure they have a value or a getter
 			if !option.hasSetValue() && !option.hasGetter() {
 				var zero T
 				if reflect.DeepEqual(option.Default, zero) {
-					return fmt.Errorf("%w: %s", ErrConfigRequired, name)
+					configName := option.Name
+					return fmt.Errorf("%w: %s", ErrConfigRequired, configName)
 				}
 			}
 		}
@@ -124,6 +147,14 @@ func (m *ConfigurableModule[T]) findConfig(name string) (*ConfigOption[T], error
 	if !exists {
 		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
+
+	// Set the Name field if it's not already set
+	if option.Name == "" {
+		m.mu.Lock()
+		option.Name = name
+		m.mu.Unlock()
+	}
+
 	return option, nil
 }
 
@@ -204,6 +235,7 @@ func (m *ConfigurableModule[T]) ListConfigs() map[string]map[string]interface{} 
 
 	for name, option := range m.configs {
 		info := map[string]interface{}{
+			"name":        option.Name,
 			"description": option.Description,
 			"required":    option.IsRequired(),
 			"secret":      option.IsSecret(),
