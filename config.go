@@ -1,4 +1,3 @@
-// Package base provides a generic base module that can be extended with different configurations.
 package base
 
 import (
@@ -214,12 +213,12 @@ func (o *ConfigOption[T]) HasGetter() bool {
 	return o.getter != nil
 }
 
-// IsDefault returns whether the configuration option has the default value.
-func (o *ConfigOption[T]) IsDefault() bool {
+// HasDefault returns true if the default value is not the zero value.
+func (o *ConfigOption[T]) HasDefault() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	var zero T
-	return reflect.DeepEqual(o.Default, zero)
+	return !reflect.DeepEqual(o.Default, zero)
 }
 
 // GetInfo returns information about the configuration option.

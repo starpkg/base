@@ -1,4 +1,3 @@
-// Package base provides a generic base module that can be extended with different configurations.
 package base
 
 import (
@@ -20,7 +19,7 @@ type ConfigOptionInterface interface {
 	SetSecret(secret bool)
 	HasValue() bool
 	HasGetter() bool
-	IsDefault() bool
+	HasDefault() bool
 
 	// Starlark integration
 	SetValueFromStarlark(v starlark.Value) error
@@ -72,7 +71,7 @@ func (m *ConfigurableModule) Initialize() error {
 			option.SetName(name)
 		}
 
-		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && option.IsDefault() {
+		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasDefault() {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
 	}
