@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/1set/starlet"
-	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 )
 
@@ -86,24 +85,26 @@ func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starl
 		panic(err)
 	}
 
-	sd := starlark.StringDict{}
+	return func() (starlark.StringDict, error) {
+		sd := starlark.StringDict{}
 
-	// Add setter and getter functions for all configs
-	for name, option := range m.configs {
-		sd["set_"+name] = m.genSetFunction(name, option)
+		// Add setter and getter functions for all configs
+		for name, option := range m.configs {
+			sd["set_"+name] = m.genSetFunction(name, option)
 
-		// Only add getter functions for non-secret configs
-		if !option.IsSecret() {
-			sd["get_"+name] = m.genGetFunction(name, option)
+			// Only add getter functions for non-secret configs
+			if !option.IsSecret() {
+				sd["get_"+name] = m.genGetFunction(name, option)
+			}
 		}
-	}
 
-	// Add additional functions
-	for k, v := range additionalFuncs {
-		sd[k] = v
-	}
+		// Add additional functions
+		for k, v := range additionalFuncs {
+			sd[k] = v
+		}
 
-	return dataconv.WrapModuleData(moduleName, sd)
+		return sd, nil
+	}
 }
 
 // genSetFunction generates a Starlark callable function to set a configuration value.

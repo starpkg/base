@@ -258,7 +258,71 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 		return err
 	}
 
-	// Check type
+	targetType := reflect.TypeOf((*T)(nil)).Elem()
+	sourceValue := reflect.ValueOf(gv)
+	sourceType := reflect.TypeOf(gv)
+
+	// Special case for slices/arrays to handle type conversion
+	if targetType.Kind() == reflect.Slice && sourceType.Kind() == reflect.Slice {
+		// Convert from []interface{} to the target slice type
+		destSlice := reflect.MakeSlice(targetType, sourceValue.Len(), sourceValue.Len())
+
+		elemType := targetType.Elem()
+		for i := 0; i < sourceValue.Len(); i++ {
+			srcElem := sourceValue.Index(i).Interface()
+			if reflect.TypeOf(srcElem).ConvertibleTo(elemType) {
+				destSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
+			} else {
+				return fmt.Errorf("element at index %d cannot be converted to %v", i, elemType)
+			}
+		}
+
+		// Create a typed value from the converted slice
+		typedVal := destSlice.Interface().(T)
+		return o.SetValue(typedVal)
+	}
+
+	// Special case for maps to handle key/value type conversion
+	if targetType.Kind() == reflect.Map && sourceType.Kind() == reflect.Map {
+		// Create a new map of the target type
+		destMap := reflect.MakeMap(targetType)
+
+		// Get the key and value types of the target map
+		keyType := targetType.Key()
+		valueType := targetType.Elem()
+
+		// Iterate over the source map and convert each key/value pair
+		iter := sourceValue.MapRange()
+		for iter.Next() {
+			srcKey := iter.Key().Interface()
+			srcValue := iter.Value().Interface()
+
+			// Convert key
+			var destKey reflect.Value
+			if reflect.TypeOf(srcKey).ConvertibleTo(keyType) {
+				destKey = reflect.ValueOf(srcKey).Convert(keyType)
+			} else {
+				return fmt.Errorf("map key %v cannot be converted to %v", srcKey, keyType)
+			}
+
+			// Convert value
+			var destValue reflect.Value
+			if reflect.TypeOf(srcValue).ConvertibleTo(valueType) {
+				destValue = reflect.ValueOf(srcValue).Convert(valueType)
+			} else {
+				return fmt.Errorf("map value %v for key %v cannot be converted to %v", srcValue, srcKey, valueType)
+			}
+
+			// Set the converted key/value in the destination map
+			destMap.SetMapIndex(destKey, destValue)
+		}
+
+		// Create a typed value from the converted map
+		typedVal := destMap.Interface().(T)
+		return o.SetValue(typedVal)
+	}
+
+	// Try direct type assertion for simple types
 	vt, ok := gv.(T)
 	if !ok {
 		var zero T
