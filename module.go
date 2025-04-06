@@ -19,6 +19,7 @@ type ConfigOptionInterface interface {
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
+	Validate() error
 
 	// Starlark integration
 	SetValueFromStarlark(v starlark.Value) error
@@ -72,6 +73,11 @@ func (m *ConfigurableModule) Initialize() error {
 
 		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasDefault() {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
+		}
+
+		// Validate all options, including those set with WithValue which bypassed validation
+		if err := option.Validate(); err != nil {
+			return fmt.Errorf("validation failed for option '%s': %w", name, err)
 		}
 	}
 

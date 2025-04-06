@@ -2,6 +2,7 @@ package base_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/starpkg/base"
@@ -91,6 +92,64 @@ func TestConfigurableModule(t *testing.T) {
 		}
 	})
 
+	// Test validation during initialization for WithValue
+	t.Run("ValidateWithValueDuringInitialize", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Create a config option with validator and set an invalid value using WithValue
+		// WithValue bypasses validation during setting, but Initialize should validate
+		invalidOption := base.NewConfigOption(0).
+			WithName("number").
+			WithValidator(func(val int) error {
+				if val < 0 {
+					return fmt.Errorf("number must be non-negative")
+				}
+				return nil
+			}).
+			WithValue(-10) // This invalid value is accepted by WithValue
+
+		// Add the option to the module
+		err := module.SetConfigOption("number", invalidOption)
+		if err != nil {
+			t.Fatalf("SetConfigOption failed: %v", err)
+		}
+
+		// Initialize should fail due to validation error
+		err = module.Initialize()
+		if err == nil {
+			t.Fatal("Initialize should fail due to invalid value set by WithValue")
+		}
+
+		// Verify that the error indicates validation failure
+		if !errors.Is(err, base.ErrConfigInvalidValue) {
+			t.Errorf("Expected error wrapping ErrConfigInvalidValue, got: %v", err)
+		}
+
+		// Now create a module with valid value
+		validModule := base.NewConfigurableModule()
+		validOption := base.NewConfigOption(0).
+			WithName("number").
+			WithValidator(func(val int) error {
+				if val < 0 {
+					return fmt.Errorf("number must be non-negative")
+				}
+				return nil
+			}).
+			WithValue(10) // Valid value
+
+		// Add the option to the module
+		err = validModule.SetConfigOption("number", validOption)
+		if err != nil {
+			t.Fatalf("SetConfigOption failed: %v", err)
+		}
+
+		// Initialize should succeed
+		err = validModule.Initialize()
+		if err != nil {
+			t.Fatalf("Initialize failed with valid value: %v", err)
+		}
+	})
+
 	// Test required configs
 	t.Run("RequiredConfigs", func(t *testing.T) {
 		module := base.NewConfigurableModule()
@@ -170,6 +229,48 @@ func TestConfigurableModule(t *testing.T) {
 		if _, ok := dict["custom_func"]; !ok {
 			t.Error("Expected custom_func to exist")
 		}
+	})
+
+	// Test LoadModule with initialization error
+	t.Run("LoadModuleWithInitError", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Add a config option with an invalid value using WithValue
+		invalidOption := base.NewConfigOption(0).
+			WithName("number").
+			WithValidator(func(val int) error {
+				if val < 0 {
+					return fmt.Errorf("number must be non-negative")
+				}
+				return nil
+			}).
+			WithValue(-10) // Invalid value
+
+		module.SetConfigOption("number", invalidOption)
+
+		// Attempt to load the module - this should panic since LoadModule calls Initialize()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Error("Expected LoadModule to panic with invalid configuration")
+			}
+
+			// Verify that the panic message contains information about the validation error
+			panicStr, ok := r.(error)
+			if !ok {
+				t.Errorf("Expected panic to be an error, got: %v (type %T)", r, r)
+				return
+			}
+
+			if !errors.Is(panicStr, base.ErrConfigInvalidValue) {
+				t.Errorf("Expected panic to wrap ErrConfigInvalidValue, got: %v", panicStr)
+			}
+		}()
+
+		_ = module.LoadModule("test_module", nil)
+
+		// We should never reach here because LoadModule should panic
+		t.Fatal("LoadModule should have panicked with invalid configuration")
 	})
 
 	// Test ListConfigs

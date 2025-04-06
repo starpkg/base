@@ -77,9 +77,16 @@ func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	return o
 }
 
-// WithValidator adds a validator to the configuration option, which is called when the value is set.
-func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
-	o.validator = validator
+// WithValue sets the value of the configuration option.
+// This is useful for chain calls when building a configuration option.
+// Unlike SetValue, this method ignores any validators since it's part of a builder chain.
+// Validation will occur during module initialization when Initialize() is called.
+// If you need immediate validation, use SetValue instead.
+func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
+	// Skip validator checks in the builder pattern
+	// Validation will happen during Initialize() when the module is finalized
+	o.value = value
+	o.hasValue = true
 	return o
 }
 
@@ -89,15 +96,9 @@ func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
 	return o
 }
 
-// WithValue sets the value of the configuration option.
-// This is useful for chain calls when building a configuration option.
-// Unlike SetValue, this method ignores any validators since it's part of a builder chain.
-// Validation will occur during module initialization or when calling SetValue directly.
-func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
-	// Skip validator checks in the builder pattern
-	// Validation will happen during Initialize() or when using SetValue directly
-	o.value = value
-	o.hasValue = true
+// WithValidator adds a validator to the configuration option, which is called when the value is set.
+func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
+	o.validator = validator
 	return o
 }
 
@@ -123,30 +124,6 @@ func (o *ConfigOption[T]) PreferGetter() *ConfigOption[T] {
 func (o *ConfigOption[T]) PreferSetValue() *ConfigOption[T] {
 	o.valuePriority = PrioritySetValue
 	return o
-}
-
-// Internal methods
-
-// resolveValue returns the current value based on priority settings.
-func (o *ConfigOption[T]) resolveValue() T {
-	if o.valuePriority == PriorityGetter {
-		if o.getter != nil {
-			return o.getter()
-		}
-		if o.hasValue {
-			return o.value
-		}
-		return o.Default
-	}
-
-	// Default is PrioritySetValue
-	if o.hasValue {
-		return o.value
-	}
-	if o.getter != nil {
-		return o.getter()
-	}
-	return o.Default
 }
 
 // Public methods
@@ -178,6 +155,32 @@ func (o *ConfigOption[T]) SetValue(value T) error {
 
 	o.value = value
 	o.hasValue = true
+	return nil
+}
+
+// SetSecret sets whether the configuration option is secret.
+func (o *ConfigOption[T]) SetSecret(secret bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.isSecret = secret
+}
+
+// Validate validates the current value if a validator is set.
+// Returns nil if no validator is set or the validation passes.
+func (o *ConfigOption[T]) Validate() error {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	// Skip validation if there's no validator or no value has been set
+	if o.validator == nil || !o.hasValue {
+		return nil
+	}
+
+	// Run the validator on the current value
+	if err := o.validator(o.value); err != nil {
+		return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
+	}
+
 	return nil
 }
 
@@ -357,9 +360,26 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 	return dataconv.Marshal(value)
 }
 
-// SetSecret sets whether the configuration option is secret.
-func (o *ConfigOption[T]) SetSecret(secret bool) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.isSecret = secret
+// Internal methods
+
+// resolveValue returns the current value based on priority settings.
+func (o *ConfigOption[T]) resolveValue() T {
+	if o.valuePriority == PriorityGetter {
+		if o.getter != nil {
+			return o.getter()
+		}
+		if o.hasValue {
+			return o.value
+		}
+		return o.Default
+	}
+
+	// Default is PrioritySetValue
+	if o.hasValue {
+		return o.value
+	}
+	if o.getter != nil {
+		return o.getter()
+	}
+	return o.Default
 }

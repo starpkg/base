@@ -103,6 +103,12 @@ func TestConfigOption(t *testing.T) {
 			t.Errorf("Expected -10, got %d", valInt)
 		}
 
+		// Direct validation should still work and fail for the invalid value
+		err = validatedOpt.Validate()
+		if err == nil {
+			t.Error("Expected Validate() to fail for invalid value, but it succeeded")
+		}
+
 		// Now try direct SetValue which should enforce validation
 		err = validatedOpt.SetValue(-5)
 		if err == nil {
