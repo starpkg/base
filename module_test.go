@@ -513,7 +513,7 @@ func TestHelperFunctions(t *testing.T) {
 			t.Fatalf("Failed to cast to ConfigOption[string]")
 		}
 
-		// With default PrioritySetValue, the explicit value should take precedence
+		// Explicit value should take precedence over getter
 		typedOpt.SetValue("explicit")
 		val, err = base.GetConfigValue[string](module, "getter_option")
 		if err != nil {
@@ -521,16 +521,6 @@ func TestHelperFunctions(t *testing.T) {
 		}
 		if val != "explicit" {
 			t.Errorf("Expected 'explicit', got '%s'", val)
-		}
-
-		// Change to prefer getter
-		typedOpt.PreferGetter()
-		val, err = base.GetConfigValue[string](module, "getter_option")
-		if err != nil {
-			t.Fatalf("GetConfigValue failed: %v", err)
-		}
-		if val != "updated" {
-			t.Errorf("Expected 'updated', got '%s'", val)
 		}
 
 		// Initialize the module
@@ -918,10 +908,12 @@ func TestSetConfigGetter(t *testing.T) {
 
 	// Test setting a getter on an existing option
 	t.Run("ExistingOption", func(t *testing.T) {
+		// When calling SetConfigGetter on an existing option, it adds a getter
+		// but according to the new priority rules, explicit values always win
 		module := base.NewConfigurableModule()
 
-		// Create an option first
-		module.SetConfigOption("existing", base.NewConfigOption("initial value"))
+		// Create an option with no explicit value (using default only)
+		module.SetConfigOption("existing", base.NewConfigOption("default_value"))
 
 		// Set a getter on the existing option
 		dynamicValue := "dynamic"
@@ -932,7 +924,7 @@ func TestSetConfigGetter(t *testing.T) {
 			t.Fatalf("SetConfigGetter failed: %v", err)
 		}
 
-		// By default, explicit value should take precedence over getter
+		// Get the value - getter should be used since no explicit value was set
 		val, err := base.GetConfigValue[string](module, "existing")
 		if err != nil {
 			t.Fatalf("GetConfigValue failed: %v", err)
@@ -941,26 +933,29 @@ func TestSetConfigGetter(t *testing.T) {
 			t.Errorf("Expected 'dynamic', got '%s'", val)
 		}
 
-		// Get the option and change its priority
-		opt, err := module.GetConfigOption("existing")
+		// Now set an explicit value
+		optInterface, err := module.GetConfigOption("existing")
 		if err != nil {
 			t.Fatalf("GetConfigOption failed: %v", err)
 		}
-
-		typedOpt, ok := opt.(*base.ConfigOption[string])
+		typedOpt, ok := optInterface.(*base.ConfigOption[string])
 		if !ok {
 			t.Fatalf("Failed to cast option to correct type")
 		}
 
-		typedOpt.PreferGetter()
+		// Set an explicit value, which should take precedence
+		err = typedOpt.SetValue("explicit_value")
+		if err != nil {
+			t.Fatalf("SetValue failed: %v", err)
+		}
 
-		// Now the getter should take precedence
+		// Check that explicit value takes precedence
 		val, err = base.GetConfigValue[string](module, "existing")
 		if err != nil {
 			t.Fatalf("GetConfigValue failed: %v", err)
 		}
-		if val != "dynamic" {
-			t.Errorf("Expected 'dynamic', got '%s'", val)
+		if val != "explicit_value" {
+			t.Errorf("Expected 'explicit_value', got '%s'", val)
 		}
 	})
 

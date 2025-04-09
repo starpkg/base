@@ -15,16 +15,6 @@ type ConfigGetter[T any] func() T
 // ConfigValidator is a function type that validates a configuration value of type T.
 type ConfigValidator[T any] func(value T) error
 
-// ValuePriority defines which value source takes precedence when multiple are available.
-type ValuePriority int
-
-const (
-	// PrioritySetValue means explicitly set values take precedence over getters.
-	PrioritySetValue ValuePriority = iota
-	// PriorityGetter means getter functions take precedence over set values.
-	PriorityGetter
-)
-
 // ConfigOption represents an option for a configuration value.
 // Use NewConfigOption to create a new instance and the provided builder methods
 // to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
@@ -43,11 +33,10 @@ type ConfigOption[T any] struct {
 	Description string
 
 	// Private fields that should be accessed only through methods
-	getter        ConfigGetter[T]    // Use WithGetter() to set
-	validator     ConfigValidator[T] // Use WithValidator() to set
-	isRequired    bool               // Use Required() to set
-	isSecret      bool               // Use Secret() to set
-	valuePriority ValuePriority      // Determines which value takes precedence
+	getter     ConfigGetter[T]    // Use WithGetter() to set
+	validator  ConfigValidator[T] // Use WithValidator() to set
+	isRequired bool               // Use Required() to set
+	isSecret   bool               // Use Secret() to set
 
 	// Internal state fields
 	mu       sync.RWMutex
@@ -58,8 +47,7 @@ type ConfigOption[T any] struct {
 // NewConfigOption creates a new configuration option.
 func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	return &ConfigOption[T]{
-		Default:       defaultValue,
-		valuePriority: PrioritySetValue, // Default to prioritizing explicitly set values
+		Default: defaultValue,
 	}
 }
 
@@ -114,18 +102,6 @@ func (o *ConfigOption[T]) SetRequired(required bool) *ConfigOption[T] {
 // By default, an option is not secret.
 func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 	o.isSecret = secret
-	return o
-}
-
-// PreferGetter configures the option to prefer dynamic values from the getter.
-func (o *ConfigOption[T]) PreferGetter() *ConfigOption[T] {
-	o.valuePriority = PriorityGetter
-	return o
-}
-
-// PreferSetValue configures the option to prefer explicitly set values (this is the default behavior).
-func (o *ConfigOption[T]) PreferSetValue() *ConfigOption[T] {
-	o.valuePriority = PrioritySetValue
 	return o
 }
 
@@ -362,24 +338,21 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 
 // Internal methods
 
-// resolveValue returns the current value based on priority settings.
+// resolveValue returns the current value based on the priority order:
+// 1. Immediate value (if set)
+// 2. Getter method (if available)
+// 3. Default value
 func (o *ConfigOption[T]) resolveValue() T {
-	if o.valuePriority == PriorityGetter {
-		if o.getter != nil {
-			return o.getter()
-		}
-		if o.hasValue {
-			return o.value
-		}
-		return o.Default
-	}
-
-	// Default is PrioritySetValue
+	// Priority 1: Immediate value
 	if o.hasValue {
 		return o.value
 	}
+
+	// Priority 2: Getter method
 	if o.getter != nil {
 		return o.getter()
 	}
+
+	// Priority 3: Default value
 	return o.Default
 }

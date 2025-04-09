@@ -142,7 +142,7 @@ func TestConfigOption(t *testing.T) {
 			return dynamicValue
 		})
 
-		// Test default priority (PrioritySetValue)
+		// Test that getter value is used when no value is explicitly set
 		val, err := opt.GetValue()
 		if err != nil {
 			t.Fatalf("GetValue failed: %v", err)
@@ -151,7 +151,7 @@ func TestConfigOption(t *testing.T) {
 			t.Errorf("Expected dynamic value '%s', got '%s'", dynamicValue, val)
 		}
 
-		// Set a value and check priority
+		// Set a value and verify it takes precedence over getter
 		err = opt.SetValue("explicit")
 		if err != nil {
 			t.Fatalf("SetValue failed: %v", err)
@@ -165,21 +165,9 @@ func TestConfigOption(t *testing.T) {
 			t.Errorf("Expected explicit value 'explicit', got '%s'", val)
 		}
 
-		// Test PreferGetter
-		opt.PreferGetter()
-
+		// Update dynamic value and verify it doesn't affect result
+		// as explicit value takes precedence
 		dynamicValue = "updated"
-		val, err = opt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if val != "updated" {
-			t.Errorf("Expected updated dynamic value 'updated', got '%s'", val)
-		}
-
-		// Test PreferSetValue again
-		opt.PreferSetValue()
-
 		val, err = opt.GetValue()
 		if err != nil {
 			t.Fatalf("GetValue failed: %v", err)
@@ -318,37 +306,47 @@ func TestConfigOption(t *testing.T) {
 		}
 	})
 
-	// Test PreferSetValue method separately
-	t.Run("PreferSetValueMethod", func(t *testing.T) {
-		dynamicValue := "dynamic"
-		opt := base.NewConfigOption("default").
-			WithGetter(func() string { return dynamicValue }).
-			WithValue("explicit").
-			PreferGetter() // First set to prefer getter
+	// Test priority order of value resolution
+	t.Run("PriorityOrder", func(t *testing.T) {
+		dynamicValue := 100
+		// Create option with all three sources: default, getter, and value
+		priorityOpt := base.NewConfigOption(0).
+			WithGetter(func() int { return dynamicValue }).
+			WithValue(42)
 
-		// Check that it's currently using the getter value
-		val, err := opt.GetValue()
+		// Verify explicit value takes precedence
+		val, err := priorityOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != 42 {
+			t.Errorf("Expected explicitly set value (42), got %d", val)
+		}
+
+		// Remove explicit value and verify getter is used
+		newOpt := base.NewConfigOption(0).
+			WithGetter(func() int { return dynamicValue })
+
+		val, err = newOpt.GetValue()
 		if err != nil {
 			t.Fatalf("GetValue failed: %v", err)
 		}
 		if val != dynamicValue {
-			t.Errorf("Expected getter value '%s', got '%s'", dynamicValue, val)
+			t.Errorf("Expected getter value (%d), got %d", dynamicValue, val)
 		}
 
-		// Now set to prefer the set value
-		opt = opt.PreferSetValue()
-
-		// Check that it's now using the explicit value
-		val, err = opt.GetValue()
+		// Test with only default value
+		defaultOpt := base.NewConfigOption(42)
+		defVal, err := defaultOpt.GetValue()
 		if err != nil {
 			t.Fatalf("GetValue failed: %v", err)
 		}
-		if val != "explicit" {
-			t.Errorf("Expected explicit value 'explicit', got '%s'", val)
+		if defVal != 42 {
+			t.Errorf("Expected default value 42, got %d", defVal)
 		}
 	})
 
-	// Test GetStarlarkValue and resolveValue indirectly
+	// Test GetStarlarkValue
 	t.Run("StarlarkValueConversion", func(t *testing.T) {
 		// Test with a string
 		strOpt := base.NewConfigOption("default").WithValue("test_string")
@@ -388,53 +386,6 @@ func TestConfigOption(t *testing.T) {
 		}
 		if sliceVal.String() != `["a", "b", "c"]` {
 			t.Errorf("Expected Starlark list [\"a\", \"b\", \"c\"], got %s", sliceVal.String())
-		}
-
-		// Test with resolveValue priority when both getter and value are set
-		dynamicValue := 100
-		priorityOpt := base.NewConfigOption(0).
-			WithValue(42).
-			WithGetter(func() int { return dynamicValue })
-
-		// Default priority is PrioritySetValue
-		primVal, err := priorityOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if primVal != 42 {
-			t.Errorf("Default priority should be PrioritySetValue, expected 42, got %d", primVal)
-		}
-
-		// Change priority and test again
-		priorityOpt.PreferGetter()
-		primVal, err = priorityOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if primVal != dynamicValue {
-			t.Errorf("After PreferGetter, expected %d, got %d", dynamicValue, primVal)
-		}
-
-		// Test with only a getter and no set value
-		getterOnlyOpt := base.NewConfigOption(0).
-			WithGetter(func() int { return dynamicValue })
-
-		getVal, err := getterOnlyOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if getVal != dynamicValue {
-			t.Errorf("Expected %d from getter, got %d", dynamicValue, getVal)
-		}
-
-		// Test with only a default value
-		defaultOpt := base.NewConfigOption(42)
-		defVal, err := defaultOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if defVal != 42 {
-			t.Errorf("Expected default value 42, got %d", defVal)
 		}
 	})
 }
