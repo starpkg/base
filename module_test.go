@@ -3,6 +3,7 @@ package base_test
 import (
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/starpkg/base"
@@ -991,4 +992,183 @@ func TestSetConfigGetter(t *testing.T) {
 			t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
 		}
 	})
+}
+
+// TestSetConfigEnvVar tests setting environment variables at the module level
+func TestSetConfigEnvVar(t *testing.T) {
+	// Set up test environment variables
+	os.Setenv("MODULE_TEST_STRING", "module_env_value")
+	os.Setenv("MODULE_TEST_INT", "123")
+	defer func() {
+		os.Unsetenv("MODULE_TEST_STRING")
+		os.Unsetenv("MODULE_TEST_INT")
+	}()
+
+	module := base.NewConfigurableModule()
+
+	// Set an environment variable for a new option
+	err := base.SetConfigEnvVar[string](module, "env_option", "MODULE_TEST_STRING")
+	if err != nil {
+		t.Fatalf("SetConfigEnvVar failed: %v", err)
+	}
+
+	// Get the value - should use the environment variable
+	val, err := base.GetConfigValue[string](module, "env_option")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if val != "module_env_value" {
+		t.Errorf("Expected environment value 'module_env_value', got '%s'", val)
+	}
+
+	// Test setting env var on an existing option
+	module.SetConfigOption("existing_opt", base.NewConfigOption("default_value"))
+	err = base.SetConfigEnvVar[string](module, "existing_opt", "MODULE_TEST_STRING")
+	if err != nil {
+		t.Fatalf("SetConfigEnvVar on existing option failed: %v", err)
+	}
+
+	// Get the value
+	val, err = base.GetConfigValue[string](module, "existing_opt")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if val != "module_env_value" {
+		t.Errorf("Expected environment value 'module_env_value', got '%s'", val)
+	}
+
+	// Now set an explicit value, which should take precedence
+	err = base.SetConfigValue(module, "existing_opt", "explicit_value")
+	if err != nil {
+		t.Fatalf("SetConfigValue failed: %v", err)
+	}
+
+	val, err = base.GetConfigValue[string](module, "existing_opt")
+	if err != nil {
+		t.Fatalf("GetConfigValue failed: %v", err)
+	}
+	if val != "explicit_value" {
+		t.Errorf("Expected explicit value 'explicit_value', got '%s'", val)
+	}
+
+	// Test with a different type (int)
+	err = base.SetConfigEnvVar[int](module, "int_env_option", "MODULE_TEST_INT")
+	if err != nil {
+		t.Fatalf("SetConfigEnvVar for int failed: %v", err)
+	}
+
+	intVal, err := base.GetConfigValue[int](module, "int_env_option")
+	if err != nil {
+		t.Fatalf("GetConfigValue for int failed: %v", err)
+	}
+	if intVal != 123 {
+		t.Errorf("Expected int environment value 123, got %d", intVal)
+	}
+
+	// Test with type mismatch
+	err = base.SetConfigEnvVar[float64](module, "existing_opt", "MODULE_TEST_STRING")
+	if err == nil {
+		t.Error("Expected error when setting environment variable with wrong type, got nil")
+	}
+
+	// Initialize the module
+	err = module.Initialize()
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Try setting env var after initialization, which should fail
+	err = base.SetConfigEnvVar[string](module, "after_init", "MODULE_TEST_STRING")
+	if !errors.Is(err, base.ErrModuleAlreadyInitialized) {
+		t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
+	}
+}
+
+// TestWithConfigEnvVar tests the WithConfigEnvVar module option
+func TestWithConfigEnvVar(t *testing.T) {
+	// Set up test environment variables
+	os.Setenv("MODULE_OPTION_STRING", "option_env_value")
+	os.Setenv("MODULE_OPTION_INT", "456")
+	defer func() {
+		os.Unsetenv("MODULE_OPTION_STRING")
+		os.Unsetenv("MODULE_OPTION_INT")
+	}()
+
+	// Create a module with environment variable options
+	module, err := base.NewConfigurableModuleWithOptions(
+		base.WithConfigEnvVar[string]("string_env", "MODULE_OPTION_STRING"),
+		base.WithConfigEnvVar[int]("int_env", "MODULE_OPTION_INT"),
+		// Mix with other option types
+		base.WithConfigValue("direct_value", "value1"),
+		base.WithConfigGetter("dynamic_value", func() string {
+			return "dynamic"
+		}),
+	)
+
+	if err != nil {
+		t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+	}
+
+	// Test the string environment variable
+	strVal, err := base.GetConfigValue[string](module, "string_env")
+	if err != nil {
+		t.Fatalf("GetConfigValue for string_env failed: %v", err)
+	}
+	if strVal != "option_env_value" {
+		t.Errorf("Expected env value 'option_env_value', got '%s'", strVal)
+	}
+
+	// Test the int environment variable
+	intVal, err := base.GetConfigValue[int](module, "int_env")
+	if err != nil {
+		t.Fatalf("GetConfigValue for int_env failed: %v", err)
+	}
+	if intVal != 456 {
+		t.Errorf("Expected env value 456, got %d", intVal)
+	}
+
+	// Test the direct value
+	directVal, err := base.GetConfigValue[string](module, "direct_value")
+	if err != nil {
+		t.Fatalf("GetConfigValue for direct_value failed: %v", err)
+	}
+	if directVal != "value1" {
+		t.Errorf("Expected direct value 'value1', got '%s'", directVal)
+	}
+
+	// Test the getter value
+	dynamicVal, err := base.GetConfigValue[string](module, "dynamic_value")
+	if err != nil {
+		t.Fatalf("GetConfigValue for dynamic_value failed: %v", err)
+	}
+	if dynamicVal != "dynamic" {
+		t.Errorf("Expected dynamic value 'dynamic', got '%s'", dynamicVal)
+	}
+
+	// Test priority by setting multiple config methods for the same option
+	complexModule, err := base.NewConfigurableModuleWithOptions(
+		// 1. Environment variable
+		base.WithConfigEnvVar[string]("complex", "MODULE_OPTION_STRING"),
+		// 2. Default value (via empty option)
+		base.WithTypedConfigOption("complex", base.NewConfigOption("default")),
+		// 3. Getter
+		base.WithConfigGetter("complex", func() string {
+			return "from_getter"
+		}),
+		// 4. Direct value (highest priority)
+		base.WithConfigValue("complex", "explicit_value"),
+	)
+
+	if err != nil {
+		t.Fatalf("NewConfigurableModuleWithOptions with complex setup failed: %v", err)
+	}
+
+	// The direct value should take precedence
+	complexVal, err := base.GetConfigValue[string](complexModule, "complex")
+	if err != nil {
+		t.Fatalf("GetConfigValue for complex failed: %v", err)
+	}
+	if complexVal != "explicit_value" {
+		t.Errorf("Expected explicit value 'explicit_value' to take precedence, got '%s'", complexVal)
+	}
 }

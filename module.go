@@ -18,6 +18,7 @@ type ConfigOptionInterface interface {
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
+	HasEnvVar() bool
 	Validate() error
 
 	// Starlark integration
@@ -63,6 +64,13 @@ func WithConfigValue[T any](name string, value T) ModuleOption {
 func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigGetter(m, name, getter)
+	}
+}
+
+// WithConfigEnvVar sets an environment variable for the configuration option.
+func WithConfigEnvVar[T any](name string, envVar string) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigEnvVar[T](m, name, envVar)
 	}
 }
 
@@ -120,7 +128,7 @@ func (m *ConfigurableModule) Initialize() error {
 			option.SetName(name)
 		}
 
-		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasDefault() {
+		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasEnvVar() && !option.HasDefault() {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
 
@@ -274,6 +282,43 @@ func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGet
 
 	var zero T
 	newOption := NewConfigOption(zero).WithName(name).WithGetter(getter)
+	m.configs[name] = newOption
+	return nil
+}
+
+// SetConfigEnvVar sets an environment variable for a configuration option.
+func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error {
+	m.mu.RLock()
+	option, exists := m.configs[name]
+	m.mu.RUnlock()
+
+	if exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set environment variable for config of different type '%s'", name)
+		}
+
+		m.mu.Lock()
+		if m.initialized {
+			m.mu.Unlock()
+			return ErrModuleAlreadyInitialized
+		}
+
+		typedOption.WithEnvVar(envVar)
+		m.mu.Unlock()
+		return nil
+	}
+
+	// Create new option if it doesn't exist
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+
+	var zero T
+	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
 	m.configs[name] = newOption
 	return nil
 }

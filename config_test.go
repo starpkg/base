@@ -1,6 +1,7 @@
 package base_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/starpkg/base"
@@ -387,5 +388,166 @@ func TestConfigOption(t *testing.T) {
 		if sliceVal.String() != `["a", "b", "c"]` {
 			t.Errorf("Expected Starlark list [\"a\", \"b\", \"c\"], got %s", sliceVal.String())
 		}
+	})
+
+	// Test environment variable configuration
+	t.Run("EnvironmentVariable", func(t *testing.T) {
+		// Set up environment variables for testing
+		os.Setenv("TEST_ENV_STRING", "env_value")
+		os.Setenv("TEST_ENV_INT", "42")
+		os.Setenv("TEST_ENV_BOOL", "true")
+		os.Setenv("TEST_ENV_FLOAT", "3.14")
+		os.Setenv("TEST_ENV_LIST", "[1, 2, 3]")
+		os.Setenv("TEST_ENV_MAP", `{"key": "value"}`)
+		defer func() {
+			os.Unsetenv("TEST_ENV_STRING")
+			os.Unsetenv("TEST_ENV_INT")
+			os.Unsetenv("TEST_ENV_BOOL")
+			os.Unsetenv("TEST_ENV_FLOAT")
+			os.Unsetenv("TEST_ENV_LIST")
+			os.Unsetenv("TEST_ENV_MAP")
+		}()
+
+		// Test basic environment variable configuration for string
+		t.Run("StringEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption("default").WithEnvVar("TEST_ENV_STRING")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "env_value" {
+				t.Errorf("Expected environment value 'env_value', got '%s'", val)
+			}
+
+			// HasEnvVar should return true
+			if !opt.HasEnvVar() {
+				t.Error("HasEnvVar should return true when environment variable is set")
+			}
+		})
+
+		// Test environment variable with int type
+		t.Run("IntEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption(0).WithEnvVar("TEST_ENV_INT")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != 42 {
+				t.Errorf("Expected environment value 42, got %d", val)
+			}
+		})
+
+		// Test environment variable with boolean type
+		t.Run("BoolEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption(false).WithEnvVar("TEST_ENV_BOOL")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != true {
+				t.Errorf("Expected environment value true, got %v", val)
+			}
+		})
+
+		// Test environment variable with slice
+		t.Run("ListEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption([]int{}).WithEnvVar("TEST_ENV_LIST")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			expected := []int{1, 2, 3}
+			if len(val) != len(expected) {
+				t.Fatalf("Expected environment value %v, got %v", expected, val)
+			}
+			for i, v := range val {
+				if v != expected[i] {
+					t.Errorf("Expected %d at index %d, got %d", expected[i], i, v)
+				}
+			}
+		})
+
+		// Test priority order (explicit value > env var)
+		t.Run("PriorityOverEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithEnvVar("TEST_ENV_STRING").
+				WithValue("explicit_value")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "explicit_value" {
+				t.Errorf("Expected explicit value 'explicit_value' to take precedence, got '%s'", val)
+			}
+		})
+
+		// Test priority order (getter > env var)
+		t.Run("GetterPriorityOverEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithEnvVar("TEST_ENV_STRING").
+				WithGetter(func() string {
+					return "getter_value"
+				})
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "getter_value" {
+				t.Errorf("Expected getter value 'getter_value' to take precedence over env var, got '%s'", val)
+			}
+		})
+
+		// Test env var > default
+		t.Run("EnvVarPriorityOverDefault", func(t *testing.T) {
+			opt := base.NewConfigOption("default").WithEnvVar("TEST_ENV_STRING")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "env_value" {
+				t.Errorf("Expected env var 'env_value' to take precedence over default, got '%s'", val)
+			}
+		})
+
+		// Test invalid env var format for the type
+		t.Run("InvalidEnvVarFormat", func(t *testing.T) {
+			// Set an env var with invalid format for int
+			os.Setenv("TEST_ENV_INVALID", "not_an_int")
+			defer os.Unsetenv("TEST_ENV_INVALID")
+
+			opt := base.NewConfigOption(10).WithEnvVar("TEST_ENV_INVALID")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+
+			// Should fall back to default when env var format is invalid
+			if val != 10 {
+				t.Errorf("Expected fallback to default value 10, got %d", val)
+			}
+		})
+
+		// Test non-existent env var
+		t.Run("NonExistentEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption("default").WithEnvVar("NON_EXISTENT_ENV_VAR")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+
+			// Should fall back to default when env var doesn't exist
+			if val != "default" {
+				t.Errorf("Expected fallback to default value 'default', got '%s'", val)
+			}
+		})
 	})
 }

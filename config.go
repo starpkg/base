@@ -2,7 +2,10 @@ package base
 
 import (
 	"fmt"
+	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/1set/starlet/dataconv"
@@ -19,10 +22,6 @@ type ConfigValidator[T any] func(value T) error
 // Use NewConfigOption to create a new instance and the provided builder methods
 // to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
 type ConfigOption[T any] struct {
-	// Default is the default value for the configuration.
-	// Validator will not be called on the default value.
-	Default T
-
 	// Name is the unique identifier for this configuration option.
 	// This is used when registering the option with a ConfigurableModule.
 	Name string
@@ -31,6 +30,15 @@ type ConfigOption[T any] struct {
 	// This is used for documentation and displayed when listing configurations.
 	// It's recommended to provide a clear, concise explanation of what the config does.
 	Description string
+
+	// EnvVar is the name of an environment variable to look up for this configuration.
+	// If specified and the environment variable exists, its value will be used
+	// according to the priority order: immediate value, getter, environment variable, default.
+	EnvVar string
+
+	// Default is the default value for the configuration.
+	// Validator will not be called on the default value.
+	Default T
 
 	// Private fields that should be accessed only through methods
 	getter     ConfigGetter[T]    // Use WithGetter() to set
@@ -62,6 +70,12 @@ func (o *ConfigOption[T]) WithName(name string) *ConfigOption[T] {
 // WithDescription adds a description to the configuration option.
 func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	o.Description = desc
+	return o
+}
+
+// WithEnvVar specifies an environment variable name to check for this configuration.
+func (o *ConfigOption[T]) WithEnvVar(envVar string) *ConfigOption[T] {
+	o.EnvVar = envVar
 	return o
 }
 
@@ -212,6 +226,13 @@ func (o *ConfigOption[T]) HasDefault() bool {
 	return !reflect.DeepEqual(o.Default, zero)
 }
 
+// HasEnvVar returns whether the configuration option has an environment variable specified.
+func (o *ConfigOption[T]) HasEnvVar() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.EnvVar != ""
+}
+
 // GetInfo returns information about the configuration option.
 func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	o.mu.RLock()
@@ -219,10 +240,12 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	info := map[string]interface{}{
 		"name":        o.Name,
 		"description": o.Description,
+		"env_var":     o.EnvVar,
 		"required":    o.isRequired,
 		"secret":      o.isSecret,
 		"has_value":   o.hasValue,
 		"has_getter":  o.getter != nil,
+		"has_env_var": o.EnvVar != "",
 	}
 
 	// Only include values for non-secret configs
@@ -341,7 +364,8 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 // resolveValue returns the current value based on the priority order:
 // 1. Immediate value (if set)
 // 2. Getter method (if available)
-// 3. Default value
+// 3. Environment variable (if specified and available)
+// 4. Default value
 func (o *ConfigOption[T]) resolveValue() T {
 	// Priority 1: Immediate value
 	if o.hasValue {
@@ -353,6 +377,111 @@ func (o *ConfigOption[T]) resolveValue() T {
 		return o.getter()
 	}
 
-	// Priority 3: Default value
+	// Priority 3: Environment variable
+	if o.EnvVar != "" {
+		if envValue, exists := os.LookupEnv(o.EnvVar); exists {
+			// Try to convert the environment variable value to the right type
+			converted, ok := o.convertEnvValue(envValue)
+			if ok {
+				return converted
+			}
+			// If conversion fails, continue to the next priority
+		}
+	}
+
+	// Priority 4: Default value
 	return o.Default
+}
+
+// convertEnvValue attempts to convert an environment variable string value
+// to the target type T.
+func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
+	var zero T
+	targetType := reflect.TypeOf(zero)
+
+	// Special case handling for direct string types
+	if targetType.Kind() == reflect.String {
+		stringValue := reflect.ValueOf(envValue).Convert(targetType).Interface().(T)
+		return stringValue, true
+	}
+
+	// Special case handling for common scalar types
+	switch targetType.Kind() {
+	case reflect.Bool:
+		// Handle boolean values more directly, accepting various formats
+		lowerVal := strings.ToLower(envValue)
+		var boolValue bool
+		if lowerVal == "true" || lowerVal == "yes" || lowerVal == "1" || lowerVal == "on" {
+			boolValue = true
+		} else if lowerVal == "false" || lowerVal == "no" || lowerVal == "0" || lowerVal == "off" {
+			boolValue = false
+		} else {
+			return zero, false // Invalid boolean format
+		}
+		return reflect.ValueOf(boolValue).Convert(targetType).Interface().(T), true
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		intVal, err := strconv.ParseInt(envValue, 10, 64)
+		if err != nil {
+			return zero, false
+		}
+		return reflect.ValueOf(intVal).Convert(targetType).Interface().(T), true
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		uintVal, err := strconv.ParseUint(envValue, 10, 64)
+		if err != nil {
+			return zero, false
+		}
+		return reflect.ValueOf(uintVal).Convert(targetType).Interface().(T), true
+
+	case reflect.Float32, reflect.Float64:
+		floatVal, err := strconv.ParseFloat(envValue, 64)
+		if err != nil {
+			return zero, false
+		}
+		return reflect.ValueOf(floatVal).Convert(targetType).Interface().(T), true
+	}
+
+	// For complex types (slices, maps, structs) use Starlark parsing
+	// Try to parse as a literal first (for lists, maps, etc.)
+	if strings.HasPrefix(envValue, "[") || strings.HasPrefix(envValue, "{") {
+		// Try to parse as a Starlark value
+		starValue, err := starlark.Eval(
+			&starlark.Thread{Name: "env-convert"},
+			"<env>",
+			envValue,
+			nil,
+		)
+		if err == nil {
+			goValue, err := dataconv.Unmarshal(starValue)
+			if err == nil {
+				// Check if we got something that's compatible with our target type
+				if reflect.TypeOf(goValue).ConvertibleTo(targetType) {
+					return reflect.ValueOf(goValue).Convert(targetType).Interface().(T), true
+				}
+
+				// Special handling for slices/arrays
+				if targetType.Kind() == reflect.Slice && reflect.TypeOf(goValue).Kind() == reflect.Slice {
+					goSlice := reflect.ValueOf(goValue)
+					targetSlice := reflect.MakeSlice(targetType, goSlice.Len(), goSlice.Len())
+
+					// Try to convert each element
+					elemType := targetType.Elem()
+					for i := 0; i < goSlice.Len(); i++ {
+						srcElem := goSlice.Index(i).Interface()
+						if reflect.TypeOf(srcElem).ConvertibleTo(elemType) {
+							targetSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
+						} else {
+							return zero, false // Element type mismatch
+						}
+					}
+
+					return targetSlice.Interface().(T), true
+				}
+			}
+		}
+	}
+
+	// If we got here, conversion failed
+	return zero, false
 }
