@@ -18,44 +18,29 @@ type ConfigGetter[T any] func() T
 // ConfigValidator is a function type that validates a configuration value of type T.
 type ConfigValidator[T any] func(value T) error
 
-// ConfigOption represents an option for a configuration value.
-// Use NewConfigOption to create a new instance and the provided builder methods
-// to configure it (WithDescription, WithValidator, WithGetter, Required, Secret).
+// ConfigOption represents a configuration option with a specific type.
+// It supports default values, validation, dynamic getters, and environment variable overrides.
 type ConfigOption[T any] struct {
-	// Name is the unique identifier for this configuration option.
-	// This is used when registering the option with a ConfigurableModule.
-	Name string
+	// Public fields that can be set directly
+	Name        string // Unique identifier for this configuration option
+	Description string // Human-readable description of the configuration
+	EnvVar      string // Name of environment variable to check for this configuration
 
-	// Description is a human-readable description of the configuration.
-	// This is used for documentation and displayed when listing configurations.
-	// It's recommended to provide a clear, concise explanation of what the config does.
-	Description string
-
-	// EnvVar is the name of an environment variable to look up for this configuration.
-	// If specified and the environment variable exists, its value will be used
-	// according to the priority order: immediate value, getter, environment variable, default.
-	EnvVar string
-
-	// Default is the default value for the configuration.
-	// Validator will not be called on the default value.
-	Default T
-
-	// Private fields that should be accessed only through methods
-	getter     ConfigGetter[T]    // Use WithGetter() to set
-	validator  ConfigValidator[T] // Use WithValidator() to set
-	isRequired bool               // Use Required() to set
-	isSecret   bool               // Use Secret() to set
-
-	// Internal state fields
-	mu       sync.RWMutex
-	value    T
-	hasValue bool
+	// Private fields that should be accessed through methods
+	mu         sync.RWMutex
+	defaultVal T
+	value      T
+	hasValue   bool
+	getter     ConfigGetter[T]
+	validator  ConfigValidator[T]
+	isRequired bool
+	isSecret   bool
 }
 
-// NewConfigOption creates a new configuration option.
+// NewConfigOption creates a new configuration option with the given default value.
 func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	return &ConfigOption[T]{
-		Default: defaultValue,
+		defaultVal: defaultValue,
 	}
 }
 
@@ -63,18 +48,24 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 
 // WithName sets the name of the configuration option.
 func (o *ConfigOption[T]) WithName(name string) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.Name = name
 	return o
 }
 
 // WithDescription adds a description to the configuration option.
 func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.Description = desc
 	return o
 }
 
 // WithEnvVar specifies an environment variable name to check for this configuration.
 func (o *ConfigOption[T]) WithEnvVar(envVar string) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.EnvVar = envVar
 	return o
 }
@@ -83,10 +74,9 @@ func (o *ConfigOption[T]) WithEnvVar(envVar string) *ConfigOption[T] {
 // This is useful for chain calls when building a configuration option.
 // Unlike SetValue, this method ignores any validators since it's part of a builder chain.
 // Validation will occur during module initialization when Initialize() is called.
-// If you need immediate validation, use SetValue instead.
 func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
-	// Skip validator checks in the builder pattern
-	// Validation will happen during Initialize() when the module is finalized
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.value = value
 	o.hasValue = true
 	return o
@@ -94,27 +84,32 @@ func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
 
 // WithGetter adds a custom getter to the configuration option.
 func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.getter = getter
 	return o
 }
 
-// WithValidator adds a validator to the configuration option, which is called when the value is set.
+// WithValidator adds a validator to the configuration option.
 func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.validator = validator
 	return o
 }
 
 // SetRequired sets whether the configuration option is required.
-// By default, an option is not required.
 func (o *ConfigOption[T]) SetRequired(required bool) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.isRequired = required
 	return o
 }
 
 // SetSecret sets whether the configuration option is secret.
-// Secret options cannot be retrieved through GetValue.
-// By default, an option is not secret.
 func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.isSecret = secret
 	return o
 }
@@ -122,11 +117,11 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 // Public methods
 
 // GetValue returns the current value of the configuration option.
+// For secret options, it returns an error.
 func (o *ConfigOption[T]) GetValue() (T, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	// If the configuration is marked as secret, don't allow retrieval
 	if o.isSecret {
 		var zero T
 		return zero, ErrSecretConfigNotRetrievable
@@ -136,15 +131,16 @@ func (o *ConfigOption[T]) GetValue() (T, error) {
 }
 
 // SetValue sets the value of the configuration option.
+// It validates the value if a validator is set.
 func (o *ConfigOption[T]) SetValue(value T) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if o.validator != nil {
 		if err := o.validator(value); err != nil {
 			return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
 		}
 	}
-
-	o.mu.Lock()
-	defer o.mu.Unlock()
 
 	o.value = value
 	o.hasValue = true
@@ -153,20 +149,16 @@ func (o *ConfigOption[T]) SetValue(value T) error {
 
 // Validate validates the current value if a validator is set.
 // This method ONLY validates the explicitly set value (via SetValue or WithValue),
-// and does NOT validate values returned from a getter function.
-// Validation only occurs if both a validator is set AND a value has been explicitly set.
+// and does NOT validate values returned from a getter function or environment, or default values.
 // Returns nil if no validator is set, no value has been set, or the validation passes.
 func (o *ConfigOption[T]) Validate() error {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	// Skip validation if there's no validator or no value has been set
 	if o.validator == nil || !o.hasValue {
 		return nil
 	}
 
-	// Run the validator on the explicitly set value
-	// Note: This does NOT validate values from getter functions
 	if err := o.validator(o.value); err != nil {
 		return fmt.Errorf("%w: %v", ErrConfigInvalidValue, err)
 	}
@@ -223,7 +215,7 @@ func (o *ConfigOption[T]) HasDefault() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	var zero T
-	return !reflect.DeepEqual(o.Default, zero)
+	return !reflect.DeepEqual(o.defaultVal, zero)
 }
 
 // HasEnvVar returns whether the configuration option has an environment variable specified.
@@ -266,7 +258,6 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 
 // SetValueFromStarlark sets the configuration option from a starlark value.
 func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
-	// Convert to Go value
 	gv, err := dataconv.Unmarshal(v)
 	if err != nil {
 		return err
@@ -276,86 +267,120 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 	sourceValue := reflect.ValueOf(gv)
 	sourceType := reflect.TypeOf(gv)
 
-	// Special case for slices/arrays to handle type conversion
+	// Handle slices/arrays
 	if targetType.Kind() == reflect.Slice && sourceType.Kind() == reflect.Slice {
-		// Convert from []interface{} to the target slice type
 		destSlice := reflect.MakeSlice(targetType, sourceValue.Len(), sourceValue.Len())
-
 		elemType := targetType.Elem()
+
 		for i := 0; i < sourceValue.Len(); i++ {
 			srcElem := sourceValue.Index(i).Interface()
-			if reflect.TypeOf(srcElem).ConvertibleTo(elemType) {
+			srcElemType := reflect.TypeOf(srcElem)
+
+			// Try to convert numeric types
+			if isNumericType(elemType) && isNumericType(srcElemType) {
+				srcVal := reflect.ValueOf(srcElem)
+				if srcVal.Type().ConvertibleTo(elemType) {
+					destSlice.Index(i).Set(srcVal.Convert(elemType))
+					continue
+				}
+			}
+
+			// Try direct conversion
+			if srcElemType.ConvertibleTo(elemType) {
 				destSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
 			} else {
-				return fmt.Errorf("element at index %d cannot be converted to %v", i, elemType)
+				return fmt.Errorf("element at index %d cannot be converted from %v to %v", i, srcElemType, elemType)
 			}
 		}
 
-		// Create a typed value from the converted slice
-		typedVal := destSlice.Interface().(T)
-		return o.SetValue(typedVal)
+		return o.SetValue(destSlice.Interface().(T))
 	}
 
-	// Special case for maps to handle key/value type conversion
+	// Handle maps
 	if targetType.Kind() == reflect.Map && sourceType.Kind() == reflect.Map {
-		// Create a new map of the target type
 		destMap := reflect.MakeMap(targetType)
-
-		// Get the key and value types of the target map
 		keyType := targetType.Key()
 		valueType := targetType.Elem()
 
-		// Iterate over the source map and convert each key/value pair
 		iter := sourceValue.MapRange()
 		for iter.Next() {
 			srcKey := iter.Key().Interface()
 			srcValue := iter.Value().Interface()
+			srcKeyType := reflect.TypeOf(srcKey)
+			srcValueType := reflect.TypeOf(srcValue)
 
-			// Convert key
+			// Try to convert numeric types for keys
 			var destKey reflect.Value
-			if reflect.TypeOf(srcKey).ConvertibleTo(keyType) {
+			if isNumericType(keyType) && isNumericType(srcKeyType) {
+				srcKeyVal := reflect.ValueOf(srcKey)
+				if srcKeyVal.Type().ConvertibleTo(keyType) {
+					destKey = srcKeyVal.Convert(keyType)
+				} else {
+					return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
+				}
+			} else if srcKeyType.ConvertibleTo(keyType) {
 				destKey = reflect.ValueOf(srcKey).Convert(keyType)
 			} else {
-				return fmt.Errorf("map key %v cannot be converted to %v", srcKey, keyType)
+				return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
 			}
 
-			// Convert value
+			// Try to convert numeric types for values
 			var destValue reflect.Value
-			if reflect.TypeOf(srcValue).ConvertibleTo(valueType) {
+			if isNumericType(valueType) && isNumericType(srcValueType) {
+				srcValueVal := reflect.ValueOf(srcValue)
+				if srcValueVal.Type().ConvertibleTo(valueType) {
+					destValue = srcValueVal.Convert(valueType)
+				} else {
+					return fmt.Errorf("map value cannot be converted from %v to %v", srcValueType, valueType)
+				}
+			} else if srcValueType.ConvertibleTo(valueType) {
 				destValue = reflect.ValueOf(srcValue).Convert(valueType)
 			} else {
-				return fmt.Errorf("map value %v for key %v cannot be converted to %v", srcValue, srcKey, valueType)
+				return fmt.Errorf("map value cannot be converted from %v to %v", srcValueType, valueType)
 			}
 
-			// Set the converted key/value in the destination map
 			destMap.SetMapIndex(destKey, destValue)
 		}
 
-		// Create a typed value from the converted map
-		typedVal := destMap.Interface().(T)
-		return o.SetValue(typedVal)
+		return o.SetValue(destMap.Interface().(T))
 	}
 
-	// Try direct type assertion for simple types
+	// Handle simple types
+	if isNumericType(targetType) && isNumericType(sourceType) {
+		if sourceValue.Type().ConvertibleTo(targetType) {
+			return o.SetValue(sourceValue.Convert(targetType).Interface().(T))
+		}
+		return fmt.Errorf("value cannot be converted from %v to %v", sourceType, targetType)
+	}
+
+	// Try direct type assertion
 	vt, ok := gv.(T)
 	if !ok {
 		var zero T
 		return fmt.Errorf("value type mismatch, expected %T, got %T", zero, gv)
 	}
 
-	// Set value (this will run any custom validators)
 	return o.SetValue(vt)
+}
+
+// isNumericType returns true if the type is a numeric type.
+func isNumericType(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
+		return true
+	}
+	return false
 }
 
 // GetStarlarkValue returns the configuration value as a starlark value.
 func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
-	// Get configuration value
 	value, err := o.GetValue()
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert to Starlark value
 	return dataconv.Marshal(value)
 }
 
@@ -367,30 +392,23 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 // 3. Environment variable (if specified and available)
 // 4. Default value
 func (o *ConfigOption[T]) resolveValue() T {
-	// Priority 1: Immediate value
 	if o.hasValue {
 		return o.value
 	}
 
-	// Priority 2: Getter method
 	if o.getter != nil {
 		return o.getter()
 	}
 
-	// Priority 3: Environment variable
 	if o.EnvVar != "" {
 		if envValue, exists := os.LookupEnv(o.EnvVar); exists {
-			// Try to convert the environment variable value to the right type
-			converted, ok := o.convertEnvValue(envValue)
-			if ok {
+			if converted, ok := o.convertEnvValue(envValue); ok {
 				return converted
 			}
-			// If conversion fails, continue to the next priority
 		}
 	}
 
-	// Priority 4: Default value
-	return o.Default
+	return o.defaultVal
 }
 
 // convertEnvValue attempts to convert an environment variable string value
@@ -399,27 +417,28 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 	var zero T
 	targetType := reflect.TypeOf(zero)
 
-	// Special case handling for direct string types
+	// Handle string types
 	if targetType.Kind() == reflect.String {
-		stringValue := reflect.ValueOf(envValue).Convert(targetType).Interface().(T)
-		return stringValue, true
+		return reflect.ValueOf(envValue).Convert(targetType).Interface().(T), true
 	}
 
-	// Special case handling for common scalar types
-	switch targetType.Kind() {
-	case reflect.Bool:
-		// Handle boolean values more directly, accepting various formats
+	// Handle boolean values
+	if targetType.Kind() == reflect.Bool {
 		lowerVal := strings.ToLower(envValue)
 		var boolValue bool
-		if lowerVal == "true" || lowerVal == "yes" || lowerVal == "1" || lowerVal == "on" {
+		switch lowerVal {
+		case "true", "yes", "1", "on":
 			boolValue = true
-		} else if lowerVal == "false" || lowerVal == "no" || lowerVal == "0" || lowerVal == "off" {
+		case "false", "no", "0", "off":
 			boolValue = false
-		} else {
-			return zero, false // Invalid boolean format
+		default:
+			return zero, false
 		}
 		return reflect.ValueOf(boolValue).Convert(targetType).Interface().(T), true
+	}
 
+	// Handle numeric types
+	switch targetType.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		intVal, err := strconv.ParseInt(envValue, 10, 64)
 		if err != nil {
@@ -442,10 +461,8 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 		return reflect.ValueOf(floatVal).Convert(targetType).Interface().(T), true
 	}
 
-	// For complex types (slices, maps, structs) use Starlark parsing
-	// Try to parse as a literal first (for lists, maps, etc.)
+	// Handle complex types using Starlark parsing
 	if strings.HasPrefix(envValue, "[") || strings.HasPrefix(envValue, "{") {
-		// Try to parse as a Starlark value
 		starValue, err := starlark.Eval(
 			&starlark.Thread{Name: "env-convert"},
 			"<env>",
@@ -455,24 +472,21 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 		if err == nil {
 			goValue, err := dataconv.Unmarshal(starValue)
 			if err == nil {
-				// Check if we got something that's compatible with our target type
 				if reflect.TypeOf(goValue).ConvertibleTo(targetType) {
 					return reflect.ValueOf(goValue).Convert(targetType).Interface().(T), true
 				}
 
-				// Special handling for slices/arrays
 				if targetType.Kind() == reflect.Slice && reflect.TypeOf(goValue).Kind() == reflect.Slice {
 					goSlice := reflect.ValueOf(goValue)
 					targetSlice := reflect.MakeSlice(targetType, goSlice.Len(), goSlice.Len())
-
-					// Try to convert each element
 					elemType := targetType.Elem()
+
 					for i := 0; i < goSlice.Len(); i++ {
 						srcElem := goSlice.Index(i).Interface()
 						if reflect.TypeOf(srcElem).ConvertibleTo(elemType) {
 							targetSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
 						} else {
-							return zero, false // Element type mismatch
+							return zero, false
 						}
 					}
 
@@ -482,6 +496,5 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 		}
 	}
 
-	// If we got here, conversion failed
 	return zero, false
 }
