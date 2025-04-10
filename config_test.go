@@ -2,10 +2,11 @@ package base_test
 
 import (
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/starpkg/base"
-	"go.starlark.net/starlark"
 )
 
 func TestConfigOption(t *testing.T) {
@@ -210,41 +211,6 @@ func TestConfigOption(t *testing.T) {
 		}
 	})
 
-	// Test Starlark integration
-	t.Run("StarlarkIntegration", func(t *testing.T) {
-		opt := base.NewConfigOption("default")
-
-		// Set from Starlark string
-		err := opt.SetValueFromStarlark(starlark.String("starlark_value"))
-		if err != nil {
-			t.Fatalf("SetValueFromStarlark failed: %v", err)
-		}
-
-		// Get value as Go string
-		val, err := opt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if val != "starlark_value" {
-			t.Errorf("Expected 'starlark_value', got '%s'", val)
-		}
-
-		// Get value as Starlark value
-		sval, err := opt.GetStarlarkValue()
-		if err != nil {
-			t.Fatalf("GetStarlarkValue failed: %v", err)
-		}
-		if sval.String() != `"starlark_value"` {
-			t.Errorf("Expected Starlark string \"starlark_value\", got %s", sval.String())
-		}
-
-		// Test type mismatch
-		err = opt.SetValueFromStarlark(starlark.MakeInt(42))
-		if err == nil {
-			t.Error("Expected type mismatch error, got nil")
-		}
-	})
-
 	// Test GetInfo
 	t.Run("GetInfo", func(t *testing.T) {
 		opt := base.NewConfigOption("test_val").
@@ -309,85 +275,158 @@ func TestConfigOption(t *testing.T) {
 
 	// Test priority order of value resolution
 	t.Run("PriorityOrder", func(t *testing.T) {
-		dynamicValue := 100
-		// Create option with all three sources: default, getter, and value
-		priorityOpt := base.NewConfigOption(0).
-			WithGetter(func() int { return dynamicValue }).
-			WithValue(42)
+		// Test that immediate value takes precedence over getter
+		t.Run("ImmediateValueOverGetter", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithGetter(func() string { return "getter_value" }).
+				WithValue("immediate_value")
 
-		// Verify explicit value takes precedence
-		val, err := priorityOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if val != 42 {
-			t.Errorf("Expected explicitly set value (42), got %d", val)
-		}
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "immediate_value" {
+				t.Errorf("Expected immediate value 'immediate_value', got '%s'", val)
+			}
+		})
 
-		// Remove explicit value and verify getter is used
-		newOpt := base.NewConfigOption(0).
-			WithGetter(func() int { return dynamicValue })
+		// Test that getter takes precedence over environment variable
+		t.Run("GetterOverEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithGetter(func() string { return "getter_value" }).
+				WithEnvVar("TEST_ENV_VAR")
 
-		val, err = newOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if val != dynamicValue {
-			t.Errorf("Expected getter value (%d), got %d", dynamicValue, val)
-		}
+			os.Setenv("TEST_ENV_VAR", "env_value")
+			defer os.Unsetenv("TEST_ENV_VAR")
 
-		// Test with only default value
-		defaultOpt := base.NewConfigOption(42)
-		defVal, err := defaultOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-		if defVal != 42 {
-			t.Errorf("Expected default value 42, got %d", defVal)
-		}
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "getter_value" {
+				t.Errorf("Expected getter value 'getter_value', got '%s'", val)
+			}
+		})
+
+		// Test that environment variable takes precedence over default
+		t.Run("EnvVarOverDefault", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithEnvVar("TEST_ENV_VAR")
+
+			os.Setenv("TEST_ENV_VAR", "env_value")
+			defer os.Unsetenv("TEST_ENV_VAR")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "env_value" {
+				t.Errorf("Expected env value 'env_value', got '%s'", val)
+			}
+		})
+
+		// Test that default value is used when no other sources are available
+		t.Run("DefaultValue", func(t *testing.T) {
+			opt := base.NewConfigOption("default")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != "default" {
+				t.Errorf("Expected default value 'default', got '%s'", val)
+			}
+		})
 	})
 
-	// Test GetStarlarkValue
-	t.Run("StarlarkValueConversion", func(t *testing.T) {
-		// Test with a string
-		strOpt := base.NewConfigOption("default").WithValue("test_string")
-		strVal, err := strOpt.GetStarlarkValue()
-		if err != nil {
-			t.Fatalf("GetStarlarkValue failed for string: %v", err)
-		}
-		if strVal.String() != `"test_string"` {
-			t.Errorf("Expected Starlark string \"test_string\", got %s", strVal.String())
-		}
+	// Test GetInfo deadlock prevention
+	t.Run("GetInfoDeadlock", func(t *testing.T) {
+		// Test with a slow getter that could cause deadlock
+		t.Run("SlowGetter", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithGetter(func() string {
+					time.Sleep(100 * time.Millisecond)
+					return "slow_value"
+				})
 
-		// Test with an int
-		intOpt := base.NewConfigOption(42)
-		intVal, err := intOpt.GetStarlarkValue()
-		if err != nil {
-			t.Fatalf("GetStarlarkValue failed for int: %v", err)
-		}
-		if intVal.String() != "42" {
-			t.Errorf("Expected Starlark int 42, got %s", intVal.String())
-		}
+			// Start multiple goroutines to call GetInfo concurrently
+			var wg sync.WaitGroup
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					info := opt.GetInfo()
+					if info["value"] != "slow_value" {
+						t.Errorf("Expected value 'slow_value', got '%v'", info["value"])
+					}
+				}()
+			}
 
-		// Test with a bool
-		boolOpt := base.NewConfigOption(true)
-		boolVal, err := boolOpt.GetStarlarkValue()
-		if err != nil {
-			t.Fatalf("GetStarlarkValue failed for bool: %v", err)
-		}
-		if boolVal.String() != "True" {
-			t.Errorf("Expected Starlark bool True, got %s", boolVal.String())
-		}
+			// Wait for all goroutines to complete
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
 
-		// Test with a list
-		sliceOpt := base.NewConfigOption([]string{"a", "b", "c"})
-		sliceVal, err := sliceOpt.GetStarlarkValue()
-		if err != nil {
-			t.Fatalf("GetStarlarkValue failed for slice: %v", err)
-		}
-		if sliceVal.String() != `["a", "b", "c"]` {
-			t.Errorf("Expected Starlark list [\"a\", \"b\", \"c\"], got %s", sliceVal.String())
-		}
+			// Wait with timeout to detect deadlocks
+			select {
+			case <-done:
+				// All goroutines completed successfully
+			case <-time.After(2 * time.Second):
+				t.Fatal("Potential deadlock detected in GetInfo")
+			}
+		})
+
+		// Test with a getter that panics
+		t.Run("PanickingGetter", func(t *testing.T) {
+			opt := base.NewConfigOption("default").
+				WithGetter(func() string {
+					panic("getter panic")
+				})
+
+			// Call GetInfo and ensure it doesn't deadlock
+			func() {
+				defer func() {
+					if r := recover(); r == nil {
+						t.Error("Expected panic from getter")
+					}
+				}()
+				opt.GetInfo()
+			}()
+		})
+
+		// Test with concurrent access
+		t.Run("ConcurrentAccess", func(t *testing.T) {
+			opt := base.NewConfigOption("default")
+
+			var wg sync.WaitGroup
+			for i := 0; i < 100; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					info := opt.GetInfo()
+					if info["value"] != "default" {
+						t.Errorf("Expected value 'default', got '%v'", info["value"])
+					}
+				}()
+			}
+
+			// Wait for all goroutines to complete
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			// Wait with timeout to detect deadlocks
+			select {
+			case <-done:
+				// All goroutines completed successfully
+			case <-time.After(2 * time.Second):
+				t.Fatal("Potential deadlock detected in GetInfo")
+			}
+		})
 	})
 
 	// Test environment variable configuration

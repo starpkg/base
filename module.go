@@ -82,7 +82,6 @@ func NewConfigurableModule() *ConfigurableModule {
 }
 
 // NewConfigurableModuleWithOptions creates a new instance of ConfigurableModule with the given options.
-// This allows for a more fluent API when creating and configuring modules.
 func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error) {
 	module := NewConfigurableModule()
 
@@ -113,11 +112,6 @@ func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInt
 }
 
 // Initialize finalizes the module configuration and makes it immutable.
-// During initialization, it:
-// 1. Checks that all required options either have a value, a getter, or a default
-// 2. Validates all explicitly set values (via SetValue or WithValue)
-//    Note: Values from getter functions are NOT validated during initialization
-// Returns an error if any required configs are missing or if any value fails validation.
 func (m *ConfigurableModule) Initialize() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -132,8 +126,7 @@ func (m *ConfigurableModule) Initialize() error {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
 
-		// Validate all options with explicitly set values (including those set with WithValue)
-		// Note: This only validates the explicitly set values, not values from getters
+		// Validate all options with explicitly set values
 		if err := option.Validate(); err != nil {
 			return fmt.Errorf("validation failed for option '%s': %w", name, err)
 		}
@@ -193,6 +186,31 @@ func (m *ConfigurableModule) genGetFunction(name string, option ConfigOptionInte
 	return starlark.NewBuiltin("get_"+name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		return option.GetStarlarkValue()
 	})
+}
+
+// ListConfigs returns a map of configuration information
+func (m *ConfigurableModule) ListConfigs() map[string]map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]map[string]interface{})
+	for name, option := range m.configs {
+		result[name] = option.GetInfo()
+	}
+	return result
+}
+
+// GetConfigOption retrieves a configuration option by name.
+func (m *ConfigurableModule) GetConfigOption(name string) (ConfigOptionInterface, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	option, exists := m.configs[name]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
+	}
+
+	return option, nil
 }
 
 // Helper functions
@@ -321,29 +339,4 @@ func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) e
 	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
 	m.configs[name] = newOption
 	return nil
-}
-
-// ListConfigs returns a map of configuration information
-func (m *ConfigurableModule) ListConfigs() map[string]map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make(map[string]map[string]interface{})
-	for name, option := range m.configs {
-		result[name] = option.GetInfo()
-	}
-	return result
-}
-
-// GetConfigOption retrieves a configuration option by name.
-func (m *ConfigurableModule) GetConfigOption(name string) (ConfigOptionInterface, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	option, exists := m.configs[name]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
-	}
-
-	return option, nil
 }

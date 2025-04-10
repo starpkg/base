@@ -1,6 +1,7 @@
 package base
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -116,18 +117,23 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 
 // Public methods
 
-// GetValue returns the current value of the configuration option.
-// For secret options, it returns an error.
-func (o *ConfigOption[T]) GetValue() (T, error) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-
+// getValueNoLock is an internal method that returns the current value without acquiring locks.
+// It should only be used by methods that already hold the appropriate lock.
+func (o *ConfigOption[T]) getValueNoLock() (T, error) {
 	if o.isSecret {
 		var zero T
 		return zero, ErrSecretConfigNotRetrievable
 	}
 
 	return o.resolveValue(), nil
+}
+
+// GetValue returns the current value of the configuration option.
+// For secret options, it returns an error.
+func (o *ConfigOption[T]) GetValue() (T, error) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.getValueNoLock()
 }
 
 // SetValue sets the value of the configuration option.
@@ -228,6 +234,7 @@ func (o *ConfigOption[T]) HasEnvVar() bool {
 // GetInfo returns information about the configuration option.
 func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	o.mu.RLock()
+	defer o.mu.RUnlock()
 
 	info := map[string]interface{}{
 		"name":        o.Name,
@@ -242,15 +249,12 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 
 	// Only include values for non-secret configs
 	if !o.isSecret {
-		o.mu.RUnlock()
-		val, err := o.GetValue()
-		o.mu.RLock()
+		val, err := o.getValueNoLock()
 		if err == nil {
 			info["value"] = val
 		}
 	}
 
-	o.mu.RUnlock()
 	return info
 }
 
@@ -387,19 +391,22 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 // Internal methods
 
 // resolveValue returns the current value based on the priority order:
-// 1. Immediate value (if set)
-// 2. Getter method (if available)
+// 1. Immediate value (if set via SetValue or WithValue)
+// 2. Getter method (if available, provides dynamic values)
 // 3. Environment variable (if specified and available)
-// 4. Default value
+// 4. Default value (set during creation)
 func (o *ConfigOption[T]) resolveValue() T {
+	// Priority 1: Immediate value takes precedence over all other sources
 	if o.hasValue {
 		return o.value
 	}
 
+	// Priority 2: Getter provides dynamic values and takes precedence over environment variables
 	if o.getter != nil {
 		return o.getter()
 	}
 
+	// Priority 3: Environment variable takes precedence over default value
 	if o.EnvVar != "" {
 		if envValue, exists := os.LookupEnv(o.EnvVar); exists {
 			if converted, ok := o.convertEnvValue(envValue); ok {
@@ -408,21 +415,22 @@ func (o *ConfigOption[T]) resolveValue() T {
 		}
 	}
 
+	// Priority 4: Default value is used as a fallback
 	return o.defaultVal
 }
 
 // convertEnvValue attempts to convert an environment variable string value
-// to the target type T.
+// to the target type T using JSON decoding for complex types.
 func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 	var zero T
 	targetType := reflect.TypeOf(zero)
 
-	// Handle string types
+	// Handle string types directly
 	if targetType.Kind() == reflect.String {
 		return reflect.ValueOf(envValue).Convert(targetType).Interface().(T), true
 	}
 
-	// Handle boolean values
+	// Handle boolean values with common formats
 	if targetType.Kind() == reflect.Bool {
 		lowerVal := strings.ToLower(envValue)
 		var boolValue bool
@@ -438,61 +446,36 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 	}
 
 	// Handle numeric types
-	switch targetType.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		intVal, err := strconv.ParseInt(envValue, 10, 64)
-		if err != nil {
-			return zero, false
-		}
-		return reflect.ValueOf(intVal).Convert(targetType).Interface().(T), true
+	if isNumericType(targetType) {
+		switch targetType.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			intVal, err := strconv.ParseInt(envValue, 10, 64)
+			if err != nil {
+				return zero, false
+			}
+			return reflect.ValueOf(intVal).Convert(targetType).Interface().(T), true
 
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		uintVal, err := strconv.ParseUint(envValue, 10, 64)
-		if err != nil {
-			return zero, false
-		}
-		return reflect.ValueOf(uintVal).Convert(targetType).Interface().(T), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			uintVal, err := strconv.ParseUint(envValue, 10, 64)
+			if err != nil {
+				return zero, false
+			}
+			return reflect.ValueOf(uintVal).Convert(targetType).Interface().(T), true
 
-	case reflect.Float32, reflect.Float64:
-		floatVal, err := strconv.ParseFloat(envValue, 64)
-		if err != nil {
-			return zero, false
+		case reflect.Float32, reflect.Float64:
+			floatVal, err := strconv.ParseFloat(envValue, 64)
+			if err != nil {
+				return zero, false
+			}
+			return reflect.ValueOf(floatVal).Convert(targetType).Interface().(T), true
 		}
-		return reflect.ValueOf(floatVal).Convert(targetType).Interface().(T), true
 	}
 
-	// Handle complex types using Starlark parsing
+	// For complex types, try JSON decoding
 	if strings.HasPrefix(envValue, "[") || strings.HasPrefix(envValue, "{") {
-		starValue, err := starlark.Eval(
-			&starlark.Thread{Name: "env-convert"},
-			"<env>",
-			envValue,
-			nil,
-		)
-		if err == nil {
-			goValue, err := dataconv.Unmarshal(starValue)
-			if err == nil {
-				if reflect.TypeOf(goValue).ConvertibleTo(targetType) {
-					return reflect.ValueOf(goValue).Convert(targetType).Interface().(T), true
-				}
-
-				if targetType.Kind() == reflect.Slice && reflect.TypeOf(goValue).Kind() == reflect.Slice {
-					goSlice := reflect.ValueOf(goValue)
-					targetSlice := reflect.MakeSlice(targetType, goSlice.Len(), goSlice.Len())
-					elemType := targetType.Elem()
-
-					for i := 0; i < goSlice.Len(); i++ {
-						srcElem := goSlice.Index(i).Interface()
-						if reflect.TypeOf(srcElem).ConvertibleTo(elemType) {
-							targetSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
-						} else {
-							return zero, false
-						}
-					}
-
-					return targetSlice.Interface().(T), true
-				}
-			}
+		value := reflect.New(targetType).Interface()
+		if err := json.Unmarshal([]byte(envValue), value); err == nil {
+			return reflect.ValueOf(value).Elem().Interface().(T), true
 		}
 	}
 
