@@ -1,33 +1,192 @@
-# 🧱 `base` Module for Starlark Extensions
+# 🧱 `base` - Configurable Starlark Module Foundation
 
 [![godoc](https://pkg.go.dev/badge/github.com/starpkg/base.svg)](https://pkg.go.dev/github.com/starpkg/base)
 [![licenese](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A generic base module that bridges the gap between online services, external libraries, and the [Starlark](https://github.com/google/starlark-go) runtime. This module allows you to create configurable Starlark modules by extending its functionality with different configurations.
+A typed, configurable foundation for building Starlark modules that connect to online services and external libraries.
 
-## Features
+## Overview
 
-- **`ConfigurableModule`**: A generic module that can be extended with custom configurations.
-- **Flexible Configuration**: Supports setting and retrieving configuration values dynamically.
-- **Starlark Integration**: Provides Starlark callable functions to interact with configurations.
+The `base` package provides a framework for creating Starlark modules with:
 
-## Installation
+- **Type-safe configuration** using Go generics
+- **Multiple configuration sources** with clear precedence rules
+- **Secret value handling** for sensitive data
+- **Environment variable integration** for flexible deployment
+- **Full Starlark integration** with automatic getter/setter generation
 
-To install the module, run:
-
-```bash
-go get github.com/starpkg/base
-```
-
-## Usage
-
-Here's how you can use the `ConfigurableModule` to create custom Starlark modules:
+## Quick Start
 
 ```go
 package main
 
 import (
+    "github.com/starpkg/base"
+    "github.com/1set/starlet"
+)
+
+func main() {
+    // 1. Create a new module
+    module := base.NewConfigurableModule()
+    
+    // 2. Define configuration options
+    module.SetConfigOption("api_key", 
+        base.NewConfigOption("").
+            WithDescription("API key for authentication").
+            SetSecret(true))
+            
+    module.SetConfigOption("endpoint", 
+        base.NewConfigOption("https://api.example.com").
+            WithEnvVar("API_ENDPOINT"))
+            
+    // 3. Load the module with additional functions
+    loader := module.LoadModule("mymodule", nil)
+    
+    // 4. Run Starlark code with the module
+    starlet.Run(`
+        load("mymodule", "set_api_key", "get_endpoint")
+        
+        set_api_key("my-secret-key")
+        print("Using endpoint:", get_endpoint())
+    `, loader)
+}
+```
+
+## Installation
+
+```bash
+go get github.com/starpkg/base
+```
+
+## Key Concepts
+
+### Configuration Value Resolution
+
+The system uses a clear priority order when resolving configuration values:
+
+1. **Explicit values** (highest): Values set via `SetValue()` or `WithValue()`
+2. **Dynamic getters**: Values from functions set with `WithGetter()`
+3. **Environment variables**: Values from environment variables set with `WithEnvVar()`
+4. **Default values** (lowest): The value provided when creating the option
+
+```go
+// Examples of the priority system in action:
+option := base.NewConfigOption("default-value").     // Priority 4 (lowest)
+    WithEnvVar("CONFIG_VAR").                        // Priority 3
+    WithGetter(func() string { return "dynamic" }).  // Priority 2
+    WithValue("explicit-value")                      // Priority 1 (highest)
+```
+
+### Secret Configuration
+
+Mark sensitive configurations as secret to prevent exposure in Starlark:
+
+```go
+// In Go setup code:
+apiKeyOption := base.NewConfigOption("").SetSecret(true)
+module.SetConfigOption("api_key", apiKeyOption)
+
+// In Starlark code:
+load("mymodule", "set_api_key")  # No get_api_key is exposed
+set_api_key("my-secret-key")     # Can set the value
+```
+
+Key behaviors:
+- Secret values can be set from both Go and Starlark
+- No `get_` function is exposed to Starlark for secret configs
+- Values are hidden in `ListConfigs()` output
+- Go code can still access values using `GetConfigValue`
+
+### Environment Variables
+
+Tie configurations to environment variables for flexible deployment:
+
+```go
+// Define configuration with environment variable
+option := base.NewConfigOption("default").WithEnvVar("API_ENDPOINT")
+
+// At runtime, if API_ENDPOINT environment variable exists, it will
+// override the default value
+```
+
+The system automatically converts environment variable string values to the appropriate type:
+- Boolean values: true/false, yes/no, 1/0, on/off
+- Numeric types: converted to int, float, etc.
+- Complex types: parsed from JSON for slices and maps
+
+## Detailed Usage
+
+### Creating a Configurable Module
+
+```go
+// Basic creation
+module := base.NewConfigurableModule()
+
+// Using functional options
+module, err := base.NewConfigurableModuleWithOptions(
+    base.WithConfigValue("timeout", 30),
+    base.WithConfigOption("api_key", apiKeyOption),
+    base.WithTypedConfigOption("rate_limit", rateOption),
+)
+```
+
+### Configuration Options
+
+Create and configure typed options with builder pattern:
+
+```go
+// String option with validation
+apiKeyOption := base.NewConfigOption("").
+    WithName("api_key").
+    WithDescription("API key for service authentication").
+    WithValidator(func(val string) error {
+        if len(val) < 10 {
+            return errors.New("API key too short")
+        }
+        return nil
+    }).
+    SetRequired(true)
+
+// Integer option with environment variable
+timeoutOption := base.NewConfigOption(30).
+    WithName("timeout").
+    WithDescription("Request timeout in seconds").
+    WithEnvVar("API_TIMEOUT")
+    
+// Dynamic option with getter function
+timestampOption := base.NewConfigOption("").
+    WithName("timestamp").
+    WithDescription("Current server timestamp").
+    WithGetter(func() string {
+        return time.Now().Format(time.RFC3339)
+    })
+```
+
+### Using Modules in Starlark
+
+When loaded, your module automatically exposes functions:
+
+```python
+# Load the module
+load("mymodule", "set_api_key", "get_timeout", "get_timestamp")
+
+# Set values
+set_api_key("my-secret-key")  # Sets the api_key configuration
+
+# Get values (only available for non-secret configs)
+timeout = get_timeout()
+timestamp = get_timestamp()
+```
+
+### Complete Example
+
+```go
+package main
+
+import (
+    "errors"
     "fmt"
+    "time"
 
     "github.com/starpkg/base"
     "github.com/1set/starlet"
@@ -35,97 +194,108 @@ import (
 )
 
 func main() {
-    // Create a new configurable module
-    cm := base.NewConfigurableModule[string]()
+    // Create a new module
+    module := base.NewConfigurableModule()
 
-    // Set configuration values
-    cm.SetConfigValue("api_key", "your-api-key")
-    cm.SetConfigValue("endpoint", "https://api.example.com")
-
-    // Add additional functions if needed
+    // Add configurations
+    module.SetConfigOption("api_key", 
+        base.NewConfigOption("").
+            WithDescription("API key for service").
+            SetRequired(true).
+            SetSecret(true))
+            
+    module.SetConfigOption("endpoint", 
+        base.NewConfigOption("https://api.example.com").
+            WithDescription("API endpoint URL").
+            WithEnvVar("API_ENDPOINT"))
+            
+    module.SetConfigOption("timeout", 
+        base.NewConfigOption(30).
+            WithDescription("Request timeout in seconds"))
+    
+    // Add custom functions to the module
     additionalFuncs := starlark.StringDict{
-        "do_something": starlark.NewBuiltin("do_something", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-            apiKey, err := cm.GetConfig("api_key")
-            if err != nil {
-                return starlark.None, err
-            }
-            endpoint, err := cm.GetConfig("endpoint")
-            if err != nil {
-                return starlark.None, err
-            }
-            fmt.Printf("API Key: %s\n", apiKey)
-            fmt.Printf("Endpoint: %s\n", endpoint)
-            // Your implementation here
+        "make_request": starlark.NewBuiltin("make_request", func(
+            thread *starlark.Thread, 
+            b *starlark.Builtin, 
+            args starlark.Tuple, 
+            kwargs []starlark.Tuple) (starlark.Value, error) {
+            
+            // Get config values from Go code
+            apiKey, _ := base.GetConfigValue[string](module, "api_key")
+            endpoint, _ := base.GetConfigValue[string](module, "endpoint")
+            timeout, _ := base.GetConfigValue[int](module, "timeout")
+            
+            // Use the values to make a request
+            fmt.Printf("Making request to %s with timeout %ds\n", endpoint, timeout)
+            // Implementation details...
+            
             return starlark.None, nil
         }),
     }
 
     // Load the module
-    loader := cm.LoadModule("mymodule", additionalFuncs)
-
-    // Use the module with Starlet or any Starlark interpreter
-    script := `
-load("mymodule", "set_api_key", "set_endpoint", "do_something")
-
-set_api_key("new-api-key")
-set_endpoint("https://api.newexample.com")
-do_something()
-`
-
-    // Run the script with the module loader ...
+    loader := module.LoadModule("mymodule", additionalFuncs)
+    
+    // Execute Starlark code
+    starlet.Run(`
+        load("mymodule", "set_api_key", "set_timeout", "get_endpoint", "make_request")
+        
+        # Configure the module
+        set_api_key("my-secret-key-12345")
+        set_timeout(60)
+        
+        # Print the endpoint (uses default or environment variable)
+        print("Endpoint:", get_endpoint())
+        
+        # Use the module function
+        make_request()
+    `, loader)
 }
 ```
 
-## Documentation
+## API Reference
 
-### `ConfigurableModule`
+### Core Types
 
-`ConfigurableModule[T any]` is a generic module that allows you to set and get configuration values of any type `T`.
+- `ConfigOption[T]`: Generic typed configuration option
+- `ConfigOptionInterface`: Common interface for all configuration options
+- `ConfigurableModule`: Container for configuration options
 
-#### Methods
+### Creation Methods
 
-- `NewConfigurableModule[T any]() *ConfigurableModule[T]`: Creates a new instance of `ConfigurableModule`.
+- `NewConfigOption[T](defaultValue T) *ConfigOption[T]`
+- `NewConfigurableModule() *ConfigurableModule`
+- `NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error)`
 
-- `SetConfig(name string, getter ConfigGetter[T])`: Sets a configuration getter for a given name.
+### Configuration Option Methods
 
-  ```go
-  cm.SetConfig("api_key", func() string { return "dynamic-api-key" })
-  ```
+- `WithName(name string) *ConfigOption[T]`
+- `WithDescription(desc string) *ConfigOption[T]`
+- `WithEnvVar(envVar string) *ConfigOption[T]`
+- `WithValue(value T) *ConfigOption[T]`
+- `WithValidator(validator ConfigValidator[T]) *ConfigOption[T]`
+- `WithGetter(getter ConfigGetter[T]) *ConfigOption[T]`
+- `SetRequired(required bool) *ConfigOption[T]`
+- `SetSecret(secret bool) *ConfigOption[T]`
 
-- `SetConfigValue(name string, value T)`: Sets a direct configuration value for a given name.
+### Module Options
 
-  ```go
-  cm.SetConfigValue("api_key", "your-api-key")
-  ```
+- `WithConfigOption(name string, option ConfigOptionInterface) ModuleOption`
+- `WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption`
+- `WithConfigValue[T any](name string, value T) ModuleOption`
+- `WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption`
+- `WithConfigEnvVar[T any](name string, envVar string) ModuleOption`
 
-- `GetConfig(name string) (T, error)`: Retrieves the configuration value for a given name.
+### Runtime Operations
 
-  ```go
-  apiKey, err := cm.GetConfig("api_key")
-  ```
-
-- `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`: Returns a Starlark module loader with the given configurations and additional functions.
-
-  ```go
-  loader := cm.LoadModule("mymodule", starlark.StringDict{
-      "my_function": myStarlarkFunction,
-  })
-  ```
-
-### Starlark Functions
-
-When you load the module in Starlark, it automatically provides setter functions for each configuration:
-
-- `set_<config_name>(value)`: Sets the configuration value from within Starlark.
-
-#### Example
-
-```python
-load("mymodule", "set_api_key", "do_something")
-
-set_api_key("new-api-key")
-do_something()
-```
+- `SetConfigOption(name string, option ConfigOptionInterface) error`
+- `Initialize() error`
+- `ListConfigs() map[string]map[string]interface{}`
+- `GetConfigOption(name string) (ConfigOptionInterface, error)`
+- `GetConfigValue[T any](m *ConfigurableModule, name string) (T, error)`
+- `SetConfigValue[T any](m *ConfigurableModule, name string, value T) error`
+- `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`
 
 ## Contributing
 

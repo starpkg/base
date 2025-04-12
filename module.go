@@ -1,84 +1,275 @@
-// Package base provides a generic base module that can be extended with different configurations.
 package base
 
 import (
-	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/1set/starlet"
-	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 )
 
-// ConfigGetter is a function type that returns a value of type T.
-type ConfigGetter[T any] func() T
+// ConfigOptionInterface defines the common interface for configuration options.
+// It is used by ConfigurableModule to manage configuration settings.
+type ConfigOptionInterface interface {
+	// Core methods
+	GetName() string
+	SetName(name string)
+	IsRequired() bool
+	IsSecret() bool
+	HasValue() bool
+	HasGetter() bool
+	HasDefault() bool
+	HasEnvVar() bool
+	Validate() error
 
-// ConfigurableModule provides a generic base module that can be extended with different configurations.
-type ConfigurableModule[T any] struct {
-	configs map[string]ConfigGetter[T]
+	// Starlark integration
+	SetValueFromStarlark(v starlark.Value) error
+	GetStarlarkValue() (starlark.Value, error)
+
+	// Go inspection
+	GetInfo() map[string]interface{}
 }
 
-// NewConfigurableModule creates a new instance of ConfigurableModule.
-func NewConfigurableModule[T any]() *ConfigurableModule[T] {
-	return &ConfigurableModule[T]{configs: make(map[string]ConfigGetter[T])}
+// ConfigurableModule provides a generic module that can be extended with different configurations.
+// Once initialized, the module becomes immutable.
+type ConfigurableModule struct {
+	mu          sync.RWMutex
+	initialized bool
+	configs     map[string]ConfigOptionInterface
 }
 
-// SetConfig sets a configuration getter for a given name.
-func (m *ConfigurableModule[T]) SetConfig(name string, getter ConfigGetter[T]) {
-	m.configs[name] = getter
+// ModuleOption applies a configuration to the module.
+type ModuleOption func(*ConfigurableModule) error
+
+// WithConfigOption registers a configuration option for the module.
+func WithConfigOption(name string, option ConfigOptionInterface) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return m.SetConfigOption(name, option)
+	}
 }
 
-// SetConfigValue sets a configuration value for a given name.
-func (m *ConfigurableModule[T]) SetConfigValue(name string, value T) {
-	m.configs[name] = func() T { return value }
+// WithTypedConfigOption registers a strongly-typed configuration option for the module.
+func WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetTypedConfigOption(m, name, option)
+	}
 }
 
-// genSetConfig generates a Starlark callable function to set a configuration value.
-func (m *ConfigurableModule[T]) genSetConfig(name string) starlark.Callable {
-	return starlark.NewBuiltin(name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+// WithConfigValue sets a configuration value directly.
+func WithConfigValue[T any](name string, value T) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigValue(m, name, value)
+	}
+}
+
+// WithConfigGetter registers a dynamic getter for the configuration.
+func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigGetter(m, name, getter)
+	}
+}
+
+// WithConfigEnvVar associates an environment variable with the configuration.
+func WithConfigEnvVar[T any](name string, envVar string) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigEnvVar[T](m, name, envVar)
+	}
+}
+
+// NewConfigurableModule returns a new instance of ConfigurableModule.
+func NewConfigurableModule() *ConfigurableModule {
+	return &ConfigurableModule{
+		configs: make(map[string]ConfigOptionInterface),
+	}
+}
+
+// NewConfigurableModuleWithOptions returns a new instance of ConfigurableModule with the provided options applied.
+func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error) {
+	m := NewConfigurableModule()
+	for _, opt := range options {
+		if err := opt(m); err != nil {
+			return nil, fmt.Errorf("failed to apply module option: %w", err)
+		}
+	}
+	return m, nil
+}
+
+// SetConfigOption registers a configuration option for the module.
+func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInterface) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option.GetName() == "" {
+		option.SetName(name)
+	}
+	m.configs[name] = option
+	return nil
+}
+
+// Initialize finalizes the module configuration and prevents further modifications.
+func (m *ConfigurableModule) Initialize() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, option := range m.configs {
+		if option.GetName() == "" {
+			option.SetName(name)
+		}
+		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasEnvVar() && !option.HasDefault() {
+			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
+		}
+		if err := option.Validate(); err != nil {
+			return fmt.Errorf("validation failed for option '%s': %w", name, err)
+		}
+	}
+	m.initialized = true
+	return nil
+}
+
+// LoadModule returns a Starlark module loader with registered built-in functions.
+func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader {
+	if err := m.Initialize(); err != nil {
+		panic(err)
+	}
+	return func() (starlark.StringDict, error) {
+		sd := starlark.StringDict{}
+		for name, option := range m.configs {
+			sd["set_"+name] = m.generateSetBuiltin(name, option)
+			if !option.IsSecret() {
+				sd["get_"+name] = m.generateGetBuiltin(name, option)
+			}
+		}
+		for k, v := range additionalFuncs {
+			sd[k] = v
+		}
+		return sd, nil
+	}
+}
+
+// generateSetBuiltin creates a Starlark builtin for setting a configuration option.
+func (m *ConfigurableModule) generateSetBuiltin(name string, option ConfigOptionInterface) starlark.Callable {
+	return starlark.NewBuiltin("set_"+name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		var v starlark.Value
-		if err := starlark.UnpackArgs(b.Name(), args, kwargs, name, &v); err != nil {
+		if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &v); err != nil {
 			return nil, err
 		}
-		// Convert to Go value
-		gv, err := dataconv.Unmarshal(v)
-		if err != nil {
+		if err := option.SetValueFromStarlark(v); err != nil {
 			return nil, err
 		}
-		// Check type
-		vt, ok := gv.(T)
-		if !ok {
-			return nil, fmt.Errorf("value type mismatch, expected %T, got %T", *new(T), gv)
-		}
-		// Set config
-		m.configs[name] = func() T { return vt }
 		return starlark.None, nil
 	})
 }
 
-var (
-	// ErrConfigNotSet is the error when the configuration is not set.
-	ErrConfigNotSet = errors.New("config not set")
-)
-
-// GetConfig retrieves the configuration value for a given name.
-func (m *ConfigurableModule[T]) GetConfig(name string) (T, error) {
-	getter, exists := m.configs[name]
-	if !exists || getter == nil {
-		var zero T
-		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
-	}
-	return getter(), nil
+// generateGetBuiltin creates a Starlark builtin for retrieving a configuration option.
+func (m *ConfigurableModule) generateGetBuiltin(name string, option ConfigOptionInterface) starlark.Callable {
+	return starlark.NewBuiltin("get_"+name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		return option.GetStarlarkValue()
+	})
 }
 
-// LoadModule returns a Starlark module loader with the given configurations and additional functions.
-func (m *ConfigurableModule[T]) LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader {
-	sd := starlark.StringDict{}
-	for name := range m.configs {
-		sd["set_"+name] = m.genSetConfig(name)
+// ListConfigs returns a map with configuration details for each option.
+func (m *ConfigurableModule) ListConfigs() map[string]map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]map[string]interface{})
+	for name, option := range m.configs {
+		result[name] = option.GetInfo()
 	}
-	for k, v := range additionalFuncs {
-		sd[k] = v
+	return result
+}
+
+// GetConfigOption retrieves a configuration option by name.
+func (m *ConfigurableModule) GetConfigOption(name string) (ConfigOptionInterface, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	option, exists := m.configs[name]
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
-	return dataconv.WrapModuleData(moduleName, sd)
+	return option, nil
+}
+
+// Helper functions
+
+// SetTypedConfigOption registers a strongly-typed configuration option.
+func SetTypedConfigOption[T any](m *ConfigurableModule, name string, option *ConfigOption[T]) error {
+	return m.SetConfigOption(name, option)
+}
+
+// GetConfigValue returns the value of a configuration option.
+func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
+	m.mu.RLock()
+	option, exists := m.configs[name]
+	m.mu.RUnlock()
+	var zero T
+	if !exists {
+		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
+	}
+	typedOption, ok := option.(*ConfigOption[T])
+	if !ok {
+		return zero, fmt.Errorf("config '%s' is not of expected type", name)
+	}
+	return typedOption.GetValue()
+}
+
+// SetConfigValue sets the configuration value.
+func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set value of different type for config '%s'", name)
+		}
+		return typedOption.SetValue(value)
+	}
+	newOption := NewConfigOption(value).WithName(name)
+	m.configs[name] = newOption
+	return nil
+}
+
+// SetConfigGetter registers a dynamic getter for the configuration.
+func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGetter[T]) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set getter of different type for config '%s'", name)
+		}
+		typedOption.WithGetter(getter)
+		return nil
+	}
+	var zero T
+	newOption := NewConfigOption(zero).WithName(name).WithGetter(getter)
+	m.configs[name] = newOption
+	return nil
+}
+
+// SetConfigEnvVar associates an environment variable with the configuration.
+func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set environment variable for config of different type '%s'", name)
+		}
+		typedOption.WithEnvVar(envVar)
+		return nil
+	}
+	var zero T
+	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
+	m.configs[name] = newOption
+	return nil
 }
