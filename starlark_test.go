@@ -3,6 +3,7 @@ package base_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/1set/starlet"
@@ -169,6 +170,99 @@ func TestStarlarkIntegration(t *testing.T) {
 		}
 		if !errors.Is(err, base.ErrSecretConfigNotRetrievable) {
 			t.Errorf("Expected ErrSecretConfigNotRetrievable, got %v", err)
+		}
+	})
+
+	// Test with incorrect types
+	t.Run("TypeConversionErrors", func(t *testing.T) {
+		// Test map with incompatible values
+		mapComplexOpt := base.NewConfigOption(map[string]complex128{})
+		mapWithIncompatibleValues := starlark.NewDict(1)
+		mapWithIncompatibleValues.SetKey(starlark.String("key"), starlark.String("not a complex number"))
+
+		err := mapComplexOpt.SetValueFromStarlark(mapWithIncompatibleValues)
+		if err == nil {
+			t.Error("Expected error for map with incompatible value type, got nil")
+		}
+
+		// Test direct type assertion failure with a simpler case
+		boolOpt := base.NewConfigOption(true)
+		err = boolOpt.SetValueFromStarlark(starlark.MakeInt(42))
+		if err == nil {
+			t.Error("Expected error for incompatible direct type assertion, got nil")
+		}
+
+		// Test regular incompatible type error
+		intOpt := base.NewConfigOption(0)
+		err = intOpt.SetValueFromStarlark(starlark.String("not a number"))
+		if err == nil {
+			t.Error("Expected error for string that can't be converted to int, got nil")
+		}
+
+		// Test slices with incompatible element types
+		// This is needed to test element conversion failures
+		intSliceOpt := base.NewConfigOption([]int{})
+		listWithStrings := starlark.NewList([]starlark.Value{
+			starlark.String("not a number"),
+		})
+
+		err = intSliceOpt.SetValueFromStarlark(listWithStrings)
+		if err == nil {
+			t.Error("Expected error for slice with string that can't be converted to int, got nil")
+		}
+	})
+
+	// Test numeric type conversions for slices and maps
+	t.Run("NumericTypeConversions", func(t *testing.T) {
+		// Test numeric conversions for slices
+		// Float64 to Int conversion (should work)
+		intSliceOpt := base.NewConfigOption([]int{})
+		floatList := starlark.NewList([]starlark.Value{
+			starlark.Float(1.0),
+			starlark.Float(2.0),
+		})
+		err := intSliceOpt.SetValueFromStarlark(floatList)
+		if err != nil {
+			t.Errorf("Failed to convert float list to int slice: %v", err)
+		}
+
+		intVal, err := intSliceOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if len(intVal) != 2 || intVal[0] != 1 || intVal[1] != 2 {
+			t.Errorf("Expected slice [1, 2], got %v", intVal)
+		}
+
+		// Test numeric conversions for maps
+		// Float64 to Int conversion for map values
+		intMapOpt := base.NewConfigOption(map[string]int{})
+		floatMap := starlark.NewDict(2)
+		floatMap.SetKey(starlark.String("a"), starlark.Float(3.0))
+		floatMap.SetKey(starlark.String("b"), starlark.Float(4.0))
+
+		err = intMapOpt.SetValueFromStarlark(floatMap)
+		if err != nil {
+			t.Errorf("Failed to convert float dict to int map: %v", err)
+		}
+
+		mapVal, err := intMapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if len(mapVal) != 2 || mapVal["a"] != 3 || mapVal["b"] != 4 {
+			t.Errorf("Expected map {a:3, b:4}, got %v", mapVal)
+		}
+
+		// Test value that cannot be converted - complex case
+		complexOpt := base.NewConfigOption(complex(1, 2))
+		intValue := starlark.MakeInt(42)
+
+		err = complexOpt.SetValueFromStarlark(intValue)
+		if err == nil {
+			t.Error("Expected error for int -> complex conversion, got nil")
+		} else if !strings.Contains(err.Error(), "cannot be converted") {
+			t.Errorf("Expected conversion error, got: %v", err)
 		}
 	})
 }

@@ -1,6 +1,8 @@
 package base_test
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -192,6 +194,11 @@ func TestConfigOption(t *testing.T) {
 		_, err := opt.GetValue()
 		if err == nil {
 			t.Error("GetValue should return error for secret configs")
+		}
+
+		// Make sure the error is the expected error
+		if !errors.Is(err, base.ErrSecretConfigNotRetrievable) {
+			t.Errorf("Expected ErrSecretConfigNotRetrievable, got %v", err)
 		}
 
 		// But we should still be able to set values
@@ -589,4 +596,217 @@ func TestConfigOption(t *testing.T) {
 			}
 		})
 	})
+
+	// Test environment variables
+	t.Run("EnvironmentVariables", func(t *testing.T) {
+		// Test basic string environment variable
+		os.Setenv("TEST_ENV_STRING", "env_value")
+		defer os.Unsetenv("TEST_ENV_STRING")
+
+		strOpt := base.NewConfigOption("default").WithEnvVar("TEST_ENV_STRING")
+		val, err := strOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "env_value" {
+			t.Errorf("Expected env value 'env_value', got '%s'", val)
+		}
+
+		// Test integer environment variable
+		os.Setenv("TEST_ENV_INT", "42")
+		defer os.Unsetenv("TEST_ENV_INT")
+
+		intOpt := base.NewConfigOption(0).WithEnvVar("TEST_ENV_INT")
+		intVal, err := intOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if intVal != 42 {
+			t.Errorf("Expected env value 42, got %d", intVal)
+		}
+
+		// Test boolean environment variable with various true/false values
+		boolTestCases := []struct {
+			envValue string
+			expected bool
+		}{
+			{"true", true},
+			{"TRUE", true},
+			{"True", true},
+			{"1", true},
+			{"yes", true},
+			{"YES", true},
+			{"on", true},
+			{"ON", true},
+			{"false", false},
+			{"FALSE", false},
+			{"False", false},
+			{"0", false},
+			{"no", false},
+			{"NO", false},
+			{"off", false},
+			{"OFF", false},
+		}
+
+		for i, tc := range boolTestCases {
+			envName := fmt.Sprintf("TEST_ENV_BOOL_%d", i)
+			os.Setenv(envName, tc.envValue)
+			defer os.Unsetenv(envName)
+
+			boolOpt := base.NewConfigOption(!tc.expected). // Default is opposite
+									WithEnvVar(envName)
+
+			boolVal, err := boolOpt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed for bool case %s: %v", tc.envValue, err)
+			}
+			if boolVal != tc.expected {
+				t.Errorf("Expected bool value %v for %s, got %v", tc.expected, tc.envValue, boolVal)
+			}
+		}
+
+		// Test invalid boolean value
+		os.Setenv("TEST_ENV_INVALID_BOOL", "not_a_bool")
+		defer os.Unsetenv("TEST_ENV_INVALID_BOOL")
+
+		boolDefaultVal := true
+		invalidBoolOpt := base.NewConfigOption(boolDefaultVal).WithEnvVar("TEST_ENV_INVALID_BOOL")
+		invalidBoolVal, err := invalidBoolOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if invalidBoolVal != boolDefaultVal {
+			t.Errorf("Expected default value %v for invalid bool, got %v", boolDefaultVal, invalidBoolVal)
+		}
+
+		// Test float environment variable
+		os.Setenv("TEST_ENV_FLOAT", "3.14")
+		defer os.Unsetenv("TEST_ENV_FLOAT")
+
+		floatOpt := base.NewConfigOption(0.0).WithEnvVar("TEST_ENV_FLOAT")
+		floatVal, err := floatOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if floatVal != 3.14 {
+			t.Errorf("Expected env value 3.14, got %f", floatVal)
+		}
+
+		// Test JSON environment variable for complex types
+		os.Setenv("TEST_ENV_JSON", `["item1", "item2", "item3"]`)
+		defer os.Unsetenv("TEST_ENV_JSON")
+
+		jsonOpt := base.NewConfigOption([]string{}).WithEnvVar("TEST_ENV_JSON")
+		jsonVal, err := jsonOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if len(jsonVal) != 3 || jsonVal[0] != "item1" || jsonVal[1] != "item2" || jsonVal[2] != "item3" {
+			t.Errorf("Expected JSON array with 3 items, got %v", jsonVal)
+		}
+
+		// Test invalid integer environment variable
+		os.Setenv("TEST_ENV_INVALID_INT", "not_an_int")
+		defer os.Unsetenv("TEST_ENV_INVALID_INT")
+
+		invalidIntOpt := base.NewConfigOption(0).WithEnvVar("TEST_ENV_INVALID_INT")
+		invalidIntVal, err := invalidIntOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if invalidIntVal != 0 {
+			t.Errorf("Expected default value 0 for invalid int, got %d", invalidIntVal)
+		}
+
+		// Test invalid float environment variable
+		os.Setenv("TEST_ENV_INVALID_FLOAT", "not_a_float")
+		defer os.Unsetenv("TEST_ENV_INVALID_FLOAT")
+
+		invalidFloatOpt := base.NewConfigOption(1.5).WithEnvVar("TEST_ENV_INVALID_FLOAT")
+		invalidFloatVal, err := invalidFloatOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if invalidFloatVal != 1.5 {
+			t.Errorf("Expected default value 1.5 for invalid float, got %f", invalidFloatVal)
+		}
+
+		// Test invalid JSON environment variable
+		os.Setenv("TEST_ENV_INVALID_JSON", `[broken json`)
+		defer os.Unsetenv("TEST_ENV_INVALID_JSON")
+
+		defaultSlice := []string{"default"}
+		invalidJsonOpt := base.NewConfigOption(defaultSlice).WithEnvVar("TEST_ENV_INVALID_JSON")
+		invalidJsonVal, err := invalidJsonOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if len(invalidJsonVal) != 1 || invalidJsonVal[0] != "default" {
+			t.Errorf("Expected default value for invalid JSON, got %v", invalidJsonVal)
+		}
+
+		// Test invalid uint environment variable
+		os.Setenv("TEST_ENV_INVALID_UINT", "-10") // negative value can't be converted to uint
+		defer os.Unsetenv("TEST_ENV_INVALID_UINT")
+
+		invalidUintOpt := base.NewConfigOption(uint(5)).WithEnvVar("TEST_ENV_INVALID_UINT")
+		invalidUintVal, err := invalidUintOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if invalidUintVal != 5 {
+			t.Errorf("Expected default value 5 for invalid uint, got %d", invalidUintVal)
+		}
+
+		// Test env var with complex type that cannot be converted from JSON format
+		os.Setenv("TEST_ENV_COMPLEX", `{"name":"value"}`) // Not a complex128
+		defer os.Unsetenv("TEST_ENV_COMPLEX")
+
+		var complexDefault complex128 = 1 + 2i
+		complexOpt := base.NewConfigOption(complexDefault).WithEnvVar("TEST_ENV_COMPLEX")
+		complexVal, err := complexOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		// Should use default value instead
+		if complexVal != complexDefault {
+			t.Errorf("Expected default complex value for invalid JSON, got %v", complexVal)
+		}
+	})
+
+	// Test environment variables for complex numbers
+	// Test complex64 and complex128 conversions (should use default since we can't convert from env var)
+	os.Setenv("TEST_ENV_COMPLEX64", "(1+2i)")
+	defer os.Unsetenv("TEST_ENV_COMPLEX64")
+
+	complex64Default := complex64(3 + 4i)
+	complex64Opt := base.NewConfigOption(complex64Default).WithEnvVar("TEST_ENV_COMPLEX64")
+	complex64Val, err := complex64Opt.GetValue()
+	if err != nil {
+		t.Fatalf("GetValue failed: %v", err)
+	}
+	// Should use default value since env var can't be parsed as complex
+	if complex64Val != complex64Default {
+		t.Errorf("Expected default complex64 value %v, got %v", complex64Default, complex64Val)
+	}
+
+	// Also test complex128
+	os.Setenv("TEST_ENV_COMPLEX128", "(5+6i)")
+	defer os.Unsetenv("TEST_ENV_COMPLEX128")
+
+	complex128Default := complex(7, 8)
+	complex128Opt := base.NewConfigOption(complex128Default).WithEnvVar("TEST_ENV_COMPLEX128")
+	complex128Val, err := complex128Opt.GetValue()
+	if err != nil {
+		t.Fatalf("GetValue failed: %v", err)
+	}
+	// Should use default value since env var can't be parsed as complex
+	if complex128Val != complex128Default {
+		t.Errorf("Expected default complex128 value %v, got %v", complex128Default, complex128Val)
+	}
 }

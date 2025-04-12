@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/starpkg/base"
@@ -366,6 +367,41 @@ func TestConfigurableModule(t *testing.T) {
 		err = module.Initialize()
 		if err == nil {
 			t.Fatal("Initialize should fail with invalid explicitly set value")
+		}
+	})
+
+	// Test initialization with various edge cases
+	t.Run("InitializeEdgeCases", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+
+		// Add an option without a name
+		opt := base.NewConfigOption("no_name_value")
+		if err := module.SetConfigOption("unnamed_option", opt); err != nil {
+			t.Fatalf("Failed to set option without name: %v", err)
+		}
+
+		// Add a required option without a value but WITH a getter
+		requiredWithGetter := base.NewConfigOption("").
+			SetRequired(true).
+			WithGetter(func() string { return "dynamic" })
+
+		if err := module.SetConfigOption("required_with_getter", requiredWithGetter); err != nil {
+			t.Fatalf("Failed to set required option with getter: %v", err)
+		}
+
+		// Initialize should succeed because required option has a getter
+		if err := module.Initialize(); err != nil {
+			t.Fatalf("Initialize failed: %v", err)
+		}
+
+		// Check that the option without a name got a name during initialization
+		retrievedOpt, err := module.GetConfigOption("unnamed_option")
+		if err != nil {
+			t.Fatalf("Failed to get option without name: %v", err)
+		}
+
+		if retrievedOpt.GetName() != "unnamed_option" {
+			t.Errorf("Expected option name to be 'unnamed_option', got '%s'", retrievedOpt.GetName())
 		}
 	})
 }
@@ -1174,19 +1210,23 @@ func TestWithConfigEnvVar(t *testing.T) {
 }
 
 func TestConfigurableModule_SetAndGetValue(t *testing.T) {
-	m := base.NewConfigurableModule()
-	if err := base.SetConfigValue(m, "timeout", 30); err != nil {
-		t.Fatalf("Failed to set config: %v", err)
-	}
-	if err := m.Initialize(); err != nil {
-		t.Fatalf("Failed to initialize module: %v", err)
-	}
-	value, err := base.GetConfigValue[int](m, "timeout")
+	// Create a new module
+	module := base.NewConfigurableModule()
+
+	// Set a value
+	err := base.SetConfigValue(module, "test", "test_value")
 	if err != nil {
-		t.Fatalf("Failed to get config value: %v", err)
+		t.Fatalf("Failed to set value: %v", err)
 	}
-	if value != 30 {
-		t.Errorf("Expected value 30, got %v", value)
+
+	// Get the value
+	value, err := base.GetConfigValue[string](module, "test")
+	if err != nil {
+		t.Fatalf("Failed to get value: %v", err)
+	}
+
+	if value != "test_value" {
+		t.Errorf("Expected value 'test_value', got '%s'", value)
 	}
 }
 
@@ -1230,5 +1270,26 @@ func TestConfigOption_WithEnvVar(t *testing.T) {
 	}
 	if value != "environment_value" {
 		t.Errorf("Expected environment value 'environment_value', got %v", value)
+	}
+}
+
+func TestSetConfigValueTypeMismatch(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// First, set an initial string config
+	err := base.SetConfigValue(module, "test_option", "string value")
+	if err != nil {
+		t.Fatalf("Failed to set initial string value: %v", err)
+	}
+
+	// Now try to set it with a different type (int)
+	err = base.SetConfigValue(module, "test_option", 42)
+	if err == nil {
+		t.Error("Expected error when setting value with different type, got nil")
+	}
+
+	// Verify the error message mentions type mismatch
+	if err != nil && !strings.Contains(err.Error(), "cannot set value of different type") {
+		t.Errorf("Expected type mismatch error, got: %v", err)
 	}
 }
