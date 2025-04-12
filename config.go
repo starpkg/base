@@ -13,21 +13,22 @@ import (
 	"go.starlark.net/starlark"
 )
 
-// ConfigGetter is a function type that returns a value of type T.
+// ConfigGetter is a function that returns a configuration value of type T.
 type ConfigGetter[T any] func() T
 
-// ConfigValidator is a function type that validates a configuration value of type T.
+// ConfigValidator is a function that validates a configuration value of type T.
 type ConfigValidator[T any] func(value T) error
 
 // ConfigOption represents a configuration option with a specific type.
 // It supports default values, validation, dynamic getters, and environment variable overrides.
+// The internal mutex protects all mutable fields.
 type ConfigOption[T any] struct {
-	// Public fields that can be set directly
-	Name        string // Unique identifier for this configuration option
-	Description string // Human-readable description of the configuration
-	EnvVar      string // Name of environment variable to check for this configuration
+	// Configuration metadata
+	Name        string // Unique identifier for this configuration.
+	Description string // Human-readable description of the configuration.
+	EnvVar      string // Environment variable name for overriding the configuration.
 
-	// Private fields that should be accessed through methods
+	// Internal fields
 	mu         sync.RWMutex
 	defaultVal T
 	value      T
@@ -45,7 +46,9 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	}
 }
 
-// Builder methods
+//////////////////////////////////////////////////////////////////////////
+// Builder Methods
+//////////////////////////////////////////////////////////////////////////
 
 // WithName sets the name of the configuration option.
 func (o *ConfigOption[T]) WithName(name string) *ConfigOption[T] {
@@ -115,10 +118,11 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 	return o
 }
 
-// Public methods
+//////////////////////////////////////////////////////////////////////////
+// Accessors and Mutators
+//////////////////////////////////////////////////////////////////////////
 
-// getValueNoLock is an internal method that returns the current value without acquiring locks.
-// It should only be used by methods that already hold the appropriate lock.
+// getValueNoLock is an internal helper that returns the value without locking.
 func (o *ConfigOption[T]) getValueNoLock() (T, error) {
 	if o.isSecret {
 		var zero T
@@ -258,9 +262,11 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	return info
 }
 
-// Starlark integration
+//////////////////////////////////////////////////////////////////////////
+// Starlark Integration
+//////////////////////////////////////////////////////////////////////////
 
-// SetValueFromStarlark sets the configuration option from a starlark value.
+// SetValueFromStarlark sets the configuration option from a Starlark value.
 func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 	gv, err := dataconv.Unmarshal(v)
 	if err != nil {
@@ -388,15 +394,17 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 	return dataconv.Marshal(value)
 }
 
-// Internal methods
+//////////////////////////////////////////////////////////////////////////
+// Internal Methods
+//////////////////////////////////////////////////////////////////////////
 
 // resolveValue returns the current value based on the priority order:
-// 1. Immediate value (if set via SetValue or WithValue)
-// 2. Getter method (if available, provides dynamic values)
-// 3. Environment variable (if specified and available)
-// 4. Default value (set during creation)
+// 1. Immediate value
+// 2. Returned value from the getter function
+// 3. Environment variable value
+// 4. Default value
 func (o *ConfigOption[T]) resolveValue() T {
-	// Priority 1: Immediate value takes precedence over all other sources
+	// Priority 1: Immediate value takes precedence
 	if o.hasValue {
 		return o.value
 	}

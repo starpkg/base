@@ -9,6 +9,7 @@ import (
 )
 
 // ConfigOptionInterface defines the common interface for configuration options.
+// It is used by ConfigurableModule to manage configuration settings.
 type ConfigOptionInterface interface {
 	// Core methods
 	GetName() string
@@ -29,24 +30,25 @@ type ConfigOptionInterface interface {
 	GetInfo() map[string]interface{}
 }
 
-// ConfigurableModule provides a generic base module that can be extended with different configurations.
+// ConfigurableModule provides a generic module that can be extended with different configurations.
+// Once initialized, the module becomes immutable.
 type ConfigurableModule struct {
 	mu          sync.RWMutex
 	initialized bool
 	configs     map[string]ConfigOptionInterface
 }
 
-// ModuleOption is a function that applies configuration to a ConfigurableModule.
+// ModuleOption applies a configuration to the module.
 type ModuleOption func(*ConfigurableModule) error
 
-// WithConfigOption sets a configuration option for the module.
+// WithConfigOption registers a configuration option for the module.
 func WithConfigOption(name string, option ConfigOptionInterface) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return m.SetConfigOption(name, option)
 	}
 }
 
-// WithTypedConfigOption sets a strongly-typed configuration option for the module.
+// WithTypedConfigOption registers a strongly-typed configuration option for the module.
 func WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetTypedConfigOption(m, name, option)
@@ -60,139 +62,116 @@ func WithConfigValue[T any](name string, value T) ModuleOption {
 	}
 }
 
-// WithConfigGetter sets a dynamic getter function for the module.
+// WithConfigGetter registers a dynamic getter for the configuration.
 func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigGetter(m, name, getter)
 	}
 }
 
-// WithConfigEnvVar sets an environment variable for the configuration option.
+// WithConfigEnvVar associates an environment variable with the configuration.
 func WithConfigEnvVar[T any](name string, envVar string) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigEnvVar[T](m, name, envVar)
 	}
 }
 
-// NewConfigurableModule creates a new instance of ConfigurableModule.
+// NewConfigurableModule returns a new instance of ConfigurableModule.
 func NewConfigurableModule() *ConfigurableModule {
 	return &ConfigurableModule{
 		configs: make(map[string]ConfigOptionInterface),
 	}
 }
 
-// NewConfigurableModuleWithOptions creates a new instance of ConfigurableModule with the given options.
+// NewConfigurableModuleWithOptions returns a new instance of ConfigurableModule with the provided options applied.
 func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error) {
-	module := NewConfigurableModule()
-
-	for _, option := range options {
-		if err := option(module); err != nil {
+	m := NewConfigurableModule()
+	for _, opt := range options {
+		if err := opt(m); err != nil {
 			return nil, fmt.Errorf("failed to apply module option: %w", err)
 		}
 	}
-
-	return module, nil
+	return m, nil
 }
 
-// SetConfigOption sets a configuration option for a given name.
+// SetConfigOption registers a configuration option for the module.
 func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInterface) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	if m.initialized {
 		return ErrModuleAlreadyInitialized
 	}
-
 	if option.GetName() == "" {
 		option.SetName(name)
 	}
-
 	m.configs[name] = option
 	return nil
 }
 
-// Initialize finalizes the module configuration and makes it immutable.
+// Initialize finalizes the module configuration and prevents further modifications.
 func (m *ConfigurableModule) Initialize() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Check if all required configs are set
 	for name, option := range m.configs {
 		if option.GetName() == "" {
 			option.SetName(name)
 		}
-
 		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasEnvVar() && !option.HasDefault() {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
-
-		// Validate all options with explicitly set values
 		if err := option.Validate(); err != nil {
 			return fmt.Errorf("validation failed for option '%s': %w", name, err)
 		}
 	}
-
 	m.initialized = true
 	return nil
 }
 
-// LoadModule returns a Starlark module loader with the given configurations and additional functions.
+// LoadModule returns a Starlark module loader with registered built-in functions.
 func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader {
 	if err := m.Initialize(); err != nil {
 		panic(err)
 	}
-
 	return func() (starlark.StringDict, error) {
 		sd := starlark.StringDict{}
-
-		// Add setter and getter functions for all configs
 		for name, option := range m.configs {
-			sd["set_"+name] = m.genSetFunction(name, option)
-
-			// Only add getter functions for non-secret configs
+			sd["set_"+name] = m.generateSetBuiltin(name, option)
 			if !option.IsSecret() {
-				sd["get_"+name] = m.genGetFunction(name, option)
+				sd["get_"+name] = m.generateGetBuiltin(name, option)
 			}
 		}
-
-		// Add additional functions
 		for k, v := range additionalFuncs {
 			sd[k] = v
 		}
-
 		return sd, nil
 	}
 }
 
-// genSetFunction generates a Starlark callable function to set a configuration value.
-func (m *ConfigurableModule) genSetFunction(name string, option ConfigOptionInterface) starlark.Callable {
+// generateSetBuiltin creates a Starlark builtin for setting a configuration option.
+func (m *ConfigurableModule) generateSetBuiltin(name string, option ConfigOptionInterface) starlark.Callable {
 	return starlark.NewBuiltin("set_"+name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		var v starlark.Value
 		if err := starlark.UnpackArgs(b.Name(), args, kwargs, "value", &v); err != nil {
 			return nil, err
 		}
-
-		// Set value directly, validation happens inside SetValueFromStarlark
 		if err := option.SetValueFromStarlark(v); err != nil {
 			return nil, err
 		}
-
 		return starlark.None, nil
 	})
 }
 
-// genGetFunction generates a Starlark callable function to get a configuration value.
-func (m *ConfigurableModule) genGetFunction(name string, option ConfigOptionInterface) starlark.Callable {
+// generateGetBuiltin creates a Starlark builtin for retrieving a configuration option.
+func (m *ConfigurableModule) generateGetBuiltin(name string, option ConfigOptionInterface) starlark.Callable {
 	return starlark.NewBuiltin("get_"+name, func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		return option.GetStarlarkValue()
 	})
 }
 
-// ListConfigs returns a map of configuration information
+// ListConfigs returns a map with configuration details for each option.
 func (m *ConfigurableModule) ListConfigs() map[string]map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	result := make(map[string]map[string]interface{})
 	for name, option := range m.configs {
 		result[name] = option.GetInfo()
@@ -204,137 +183,91 @@ func (m *ConfigurableModule) ListConfigs() map[string]map[string]interface{} {
 func (m *ConfigurableModule) GetConfigOption(name string) (ConfigOptionInterface, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	option, exists := m.configs[name]
 	if !exists {
 		return nil, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
-
 	return option, nil
 }
 
 // Helper functions
 
-// SetTypedConfigOption sets a strongly-typed configuration option.
+// SetTypedConfigOption registers a strongly-typed configuration option.
 func SetTypedConfigOption[T any](m *ConfigurableModule, name string, option *ConfigOption[T]) error {
 	return m.SetConfigOption(name, option)
 }
 
-// GetConfigValue retrieves a configuration value.
+// GetConfigValue returns the value of a configuration option.
 func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
-	var zero T
-
 	m.mu.RLock()
 	option, exists := m.configs[name]
 	m.mu.RUnlock()
-
+	var zero T
 	if !exists {
 		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
-
 	typedOption, ok := option.(*ConfigOption[T])
 	if !ok {
 		return zero, fmt.Errorf("config '%s' is not of expected type", name)
 	}
-
 	return typedOption.GetValue()
 }
 
-// SetConfigValue sets a configuration value.
+// SetConfigValue sets the configuration value.
 func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
-	m.mu.RLock()
-	option, exists := m.configs[name]
-	m.mu.RUnlock()
-
-	if exists {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
 		typedOption, ok := option.(*ConfigOption[T])
 		if !ok {
 			return fmt.Errorf("cannot set value of different type for config '%s'", name)
 		}
 		return typedOption.SetValue(value)
 	}
-
-	// Create new option if it doesn't exist
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.initialized {
-		return ErrModuleAlreadyInitialized
-	}
-
 	newOption := NewConfigOption(value).WithName(name)
 	m.configs[name] = newOption
 	return nil
 }
 
-// SetConfigGetter sets a configuration getter.
+// SetConfigGetter registers a dynamic getter for the configuration.
 func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGetter[T]) error {
-	m.mu.RLock()
-	option, exists := m.configs[name]
-	m.mu.RUnlock()
-
-	if exists {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
 		typedOption, ok := option.(*ConfigOption[T])
 		if !ok {
 			return fmt.Errorf("cannot set getter of different type for config '%s'", name)
 		}
-
-		m.mu.Lock()
-		if m.initialized {
-			m.mu.Unlock()
-			return ErrModuleAlreadyInitialized
-		}
-
 		typedOption.WithGetter(getter)
-		m.mu.Unlock()
 		return nil
 	}
-
-	// Create new option if it doesn't exist
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.initialized {
-		return ErrModuleAlreadyInitialized
-	}
-
 	var zero T
 	newOption := NewConfigOption(zero).WithName(name).WithGetter(getter)
 	m.configs[name] = newOption
 	return nil
 }
 
-// SetConfigEnvVar sets an environment variable for a configuration option.
+// SetConfigEnvVar associates an environment variable with the configuration.
 func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error {
-	m.mu.RLock()
-	option, exists := m.configs[name]
-	m.mu.RUnlock()
-
-	if exists {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
 		typedOption, ok := option.(*ConfigOption[T])
 		if !ok {
 			return fmt.Errorf("cannot set environment variable for config of different type '%s'", name)
 		}
-
-		m.mu.Lock()
-		if m.initialized {
-			m.mu.Unlock()
-			return ErrModuleAlreadyInitialized
-		}
-
 		typedOption.WithEnvVar(envVar)
-		m.mu.Unlock()
 		return nil
 	}
-
-	// Create new option if it doesn't exist
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.initialized {
-		return ErrModuleAlreadyInitialized
-	}
-
 	var zero T
 	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
 	m.configs[name] = newOption

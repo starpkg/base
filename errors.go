@@ -1,4 +1,5 @@
-// Package base provides a generic base module that can be extended with different configurations.
+// Package base provides a generic configuration module with inline support for Starlark integration.
+// This package defines types and helpers for creating configurable options that can be integrated with a Starlark runtime.
 package base
 
 import (

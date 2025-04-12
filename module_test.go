@@ -1172,3 +1172,63 @@ func TestWithConfigEnvVar(t *testing.T) {
 		t.Errorf("Expected explicit value 'explicit_value' to take precedence, got '%s'", complexVal)
 	}
 }
+
+func TestConfigurableModule_SetAndGetValue(t *testing.T) {
+	m := base.NewConfigurableModule()
+	if err := base.SetConfigValue(m, "timeout", 30); err != nil {
+		t.Fatalf("Failed to set config: %v", err)
+	}
+	if err := m.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize module: %v", err)
+	}
+	value, err := base.GetConfigValue[int](m, "timeout")
+	if err != nil {
+		t.Fatalf("Failed to get config value: %v", err)
+	}
+	if value != 30 {
+		t.Errorf("Expected value 30, got %v", value)
+	}
+}
+
+func TestConfigurableModule_ImmutableAfterInit(t *testing.T) {
+	m := base.NewConfigurableModule()
+	if err := base.SetConfigValue(m, "port", 8080); err != nil {
+		t.Fatalf("Failed to set config: %v", err)
+	}
+	if err := m.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize module: %v", err)
+	}
+	if err := base.SetConfigValue(m, "port", 9090); err == nil {
+		t.Fatalf("Expected error when setting config after initialization, but got none")
+	} else if err != base.ErrModuleAlreadyInitialized {
+		t.Fatalf("Expected ErrModuleAlreadyInitialized, got %v", err)
+	}
+}
+func TestConfigOption_Secret(t *testing.T) {
+	// Create a secret config option
+	opt := base.NewConfigOption[string]("secret").WithName("api_key")
+	opt.SetSecret(true)
+	_, err := opt.GetValue()
+	if err == nil {
+		t.Errorf("Expected error retrieving secret config, got nil")
+	}
+	// Verify that the secret config does not expose its value in GetInfo
+	info := opt.GetInfo()
+	if _, ok := info["value"]; ok {
+		t.Errorf("Secret config should not expose its value in GetInfo")
+	}
+}
+
+func TestConfigOption_WithEnvVar(t *testing.T) {
+	// Set environment variable and ensure it overrides the default
+	os.Setenv("TEST_ENV", "environment_value")
+	defer os.Unsetenv("TEST_ENV")
+	opt := base.NewConfigOption[string]("default").WithName("config1").WithEnvVar("TEST_ENV")
+	value, err := opt.GetValue()
+	if err != nil {
+		t.Fatalf("Failed to get env var overridden value: %v", err)
+	}
+	if value != "environment_value" {
+		t.Errorf("Expected environment value 'environment_value', got %v", value)
+	}
+}
