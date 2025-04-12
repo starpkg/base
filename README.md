@@ -7,15 +7,14 @@ A generic base module that bridges the gap between online services, external lib
 
 ## Features
 
-- **Flexible Configuration**: Rich configuration options with validation, dynamic getters, and metadata
+- **Flexible Configuration**: Rich configuration options with validation, dynamic getters, and environment variable support
 - **Type Safety**: Fully leverages Go generics for type-safe configurations
 - **Comprehensive Validation**: Support for custom validation rules for configuration values
 - **Starlark Integration**: Exposes getter/setter functions to Starlark scripts
 - **Secret Handling**: Special handling for sensitive configuration values (not exposable to Starlark)
 - **Thread Safety**: Concurrency-safe operations for all configuration access
-- **Modular Structure**: Organized into separate files for better maintainability
-- **Proper Encapsulation**: Well-defined public API with private implementation details
-- **Value Priority**: Control precedence between dynamic getters and explicit values
+- **Environment Variable Support**: Override configs via environment variables
+- **Value Priority**: Clear precedence between values, getters, environment variables, and defaults
 
 ## Installation
 
@@ -25,9 +24,37 @@ To install the module, run:
 go get github.com/starpkg/base
 ```
 
+## Value Resolution Priority
+
+The `ConfigOption` type uses a clear, predictable resolution strategy when multiple sources for a value exist:
+
+1. **Immediate value** (highest priority): Values explicitly set via `SetValue()` or `WithValue()` methods
+2. **Getter function**: Dynamic values provided by a function set with `WithGetter()`
+3. **Environment variable**: Values from environment variables specified with `WithEnvVar()`
+4. **Default value** (lowest priority): The default value provided when creating the option
+
+This priority order means:
+- You can override any value by explicitly setting it, regardless of other sources
+- Dynamic getters provide values only when no explicit value is set
+- Environment variables can override default values but are overridden by explicit values and getters
+- Default values are used only as a last resort when no other source provides a value
+
+For example:
+```go
+// Create an option with default value "production"
+option := NewConfigOption("production").
+    WithEnvVar("APP_ENV").           // Can be overridden by APP_ENV environment variable
+    WithGetter(func() string {       // Will override env var but not explicit values
+        return getEnvironmentFromMetadata()
+    }).
+    WithValue("development")         // Explicitly set - overrides all other sources
+```
+
+In this example, the "development" value will be used regardless of the environment variable or getter function.
+
 ## Usage
 
-Here's how you can use the enhanced `ConfigurableModule` to create custom Starlark modules:
+Here's how you can use the `ConfigurableModule` to create custom Starlark modules:
 
 ```go
 package main
@@ -43,10 +70,11 @@ import (
 
 func main() {
     // Create a new configurable module
-    cm := base.NewConfigurableModule[string]()
+    cm := base.NewConfigurableModule()
 
     // Create a configuration option with validation and description
     apiKeyOption := base.NewConfigOption("").
+        WithName("api_key").
         WithDescription("API key for authentication with the service").
         WithValidator(func(value string) error {
             if len(value) < 10 {
@@ -54,41 +82,43 @@ func main() {
             }
             return nil
         }).
-        Required().
-        Secret()  // Secret configs won't be exposable via get_* functions
+        SetRequired(true).
+        SetSecret(true)  // Secret configs won't be exposable via get_* functions
 
     // Register the configuration option
     cm.SetConfigOption("api_key", apiKeyOption)
 
     // Create an endpoint configuration with a default value
     endpointOption := base.NewConfigOption("https://api.example.com").
-        WithDescription("API endpoint URL for service connection")
+        WithName("endpoint").
+        WithDescription("API endpoint URL for service connection").
+        WithEnvVar("API_ENDPOINT")  // Can be overridden by environment variable
 
     // Register the endpoint configuration
     cm.SetConfigOption("endpoint", endpointOption)
     
-    // Create a dynamic configuration option that always returns the current value
+    // Create a dynamic configuration option that gets current timestamp
     timestampOption := base.NewConfigOption("").
+        WithName("timestamp").
         WithDescription("Current server timestamp").
         WithGetter(func() string {
             return time.Now().Format(time.RFC3339)
-        }).
-        PreferGetter()  // Always use the getter value, even if a value is set
+        })
 
     cm.SetConfigOption("timestamp", timestampOption)
 
     // Set a value for the API key
-    cm.SetConfigValue("api_key", "your-api-key-here")
+    base.SetConfigValue(cm, "api_key", "your-api-key-here")
 
     // Add additional functions if needed
     additionalFuncs := starlark.StringDict{
         "do_something": starlark.NewBuiltin("do_something", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-            // We can use InternalGetConfig to get secret values within Go code
-            apiKey, err := cm.InternalGetConfig("api_key")
+            // We can access config values in our Go code
+            apiKey, err := base.GetConfigValue[string](cm, "api_key")
             if err != nil {
                 return starlark.None, err
             }
-            endpoint, err := cm.GetConfig("endpoint")
+            endpoint, err := base.GetConfigValue[string](cm, "endpoint")
             if err != nil {
                 return starlark.None, err
             }
@@ -104,7 +134,7 @@ func main() {
 
     // Use the module with Starlet or any Starlark interpreter
     script := `
-load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "list_configs", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "do_something")
 
 # Set configuration values
 set_api_key("new-api-key-1234567890")
@@ -116,11 +146,6 @@ print("Using endpoint:", endpoint)
 # Get dynamic configuration that always returns the latest value
 timestamp = get_timestamp()
 print("Current timestamp:", timestamp)
-
-# Display all configurations (secret values won't be shown)
-configs = list_configs()
-for name, config in configs.items():
-    print(f"Config {name}: {config}")
 
 # Use the custom function
 do_something()
@@ -144,47 +169,52 @@ The package is organized into separate files for better maintainability:
 
 #### `ConfigOption[T]`
 
-A rich configuration option that provides validation, metadata, and special behaviors. Created using the builder pattern with `NewConfigOption` and its associated methods.
+A generic configuration option providing validation, metadata, and special behaviors:
 
 ```go
 type ConfigOption[T any] struct {
-    // Public fields
-    Default     T      // Default value for the configuration
-    Description string // Human-readable description, used for documentation and UI
+    // Configuration metadata
+    Name        string // Unique identifier for this configuration
+    Description string // Human-readable description of the configuration
+    EnvVar      string // Environment variable name for overriding the configuration
     
-    // Private fields - accessed through methods
-    // getter, validator, isRequired, isSecret, valuePriority, etc.
+    // Internal fields
+    // defaultVal, value, hasValue, getter, validator, isRequired, isSecret
 }
 ```
 
-The `Description` field plays an important role in the configuration system:
+#### `ConfigOptionInterface`
 
-- It provides human-readable documentation about the purpose of the configuration
-- It is displayed in the output of the `list_configs()` Starlark function
-- It should be clear and concise, explaining what the configuration is used for
-- It should include information about expected format or values when relevant
-
-#### `ValuePriority`
-
-Defines the precedence when both a direct value and a getter function are available:
+A common interface implemented by all configuration options for use by the module:
 
 ```go
-type ValuePriority int
+type ConfigOptionInterface interface {
+    // Core methods
+    GetName() string
+    SetName(name string)
+    IsRequired() bool
+    IsSecret() bool
+    HasValue() bool
+    HasGetter() bool
+    HasDefault() bool
+    HasEnvVar() bool
+    Validate() error
 
-const (
-    // PrioritySetValue means explicitly set values take precedence over getters.
-    PrioritySetValue ValuePriority = iota
-    // PriorityGetter means getter functions take precedence over set values.
-    PriorityGetter
-)
+    // Starlark integration
+    SetValueFromStarlark(v starlark.Value) error
+    GetStarlarkValue() (starlark.Value, error)
+
+    // Go inspection
+    GetInfo() map[string]interface{}
+}
 ```
 
-#### `ConfigurableModule[T]`
+#### `ConfigurableModule`
 
-A generic module that can be extended with various configuration options.
+A module that can be extended with various configuration options:
 
 ```go
-type ConfigurableModule[T any] struct {
+type ConfigurableModule struct {
     // Internal fields - all private
 }
 ```
@@ -193,39 +223,51 @@ type ConfigurableModule[T any] struct {
 
 - `NewConfigOption[T](defaultValue T) *ConfigOption[T]`: Creates a new configuration option with a default value.
 
-- `WithDescription(desc string) *ConfigOption[T]`: Adds a description to the configuration option. Description should clearly explain the purpose and expected format of the configuration value.
+- `WithName(name string) *ConfigOption[T]`: Sets the name of the configuration option.
+
+- `WithDescription(desc string) *ConfigOption[T]`: Adds a description to the configuration option.
+
+- `WithEnvVar(envVar string) *ConfigOption[T]`: Specifies an environment variable name to check for this configuration.
+
+- `WithValue(value T) *ConfigOption[T]`: Sets the value of the configuration option.
 
 - `WithValidator(validator ConfigValidator[T]) *ConfigOption[T]`: Adds a validator to verify configuration values.
 
 - `WithGetter(getter ConfigGetter[T]) *ConfigOption[T]`: Adds a dynamic getter function for the configuration.
 
-- `Required() *ConfigOption[T]`: Marks the configuration option as required.
+- `SetRequired(required bool) *ConfigOption[T]`: Sets whether the configuration option is required.
 
-- `Secret() *ConfigOption[T]`: Marks the configuration option as a secret (sensitive).
+- `SetSecret(secret bool) *ConfigOption[T]`: Sets whether the configuration option is secret (sensitive).
 
-- `PreferGetter() *ConfigOption[T]`: Makes the getter function take precedence over explicitly set values. Useful for dynamic configurations that should always return fresh values.
+### Module Creation and Configuration
 
-- `PreferSetValue() *ConfigOption[T]`: Makes explicitly set values take precedence over the getter function. This is the default behavior and useful for overriding dynamic defaults.
+- `NewConfigurableModule() *ConfigurableModule`: Creates a new module instance.
 
-### Module Configuration
+- `NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error)`: Creates a new module with the provided options applied.
 
-- `NewConfigurableModule[T]() *ConfigurableModule[T]`: Creates a new module instance.
+- `WithConfigOption(name string, option ConfigOptionInterface) ModuleOption`: Module option that registers a configuration option.
 
-- `SetConfigOption(name string, option *ConfigOption[T]) error`: Registers a configuration option.
+- `WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption`: Module option that registers a strongly-typed configuration option.
 
-- `SetConfig(name string, getter ConfigGetter[T]) error`: Sets a dynamic getter function.
+- `WithConfigValue[T any](name string, value T) ModuleOption`: Module option that sets a configuration value directly.
 
-- `SetConfigValue(name string, value T) error`: Sets a direct configuration value.
+- `WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption`: Module option that registers a dynamic getter for the configuration.
 
-- `Initialize() error`: Finalizes the module configuration and verifies required values.
+- `WithConfigEnvVar[T any](name string, envVar string) ModuleOption`: Module option that associates an environment variable with the configuration.
 
 ### Runtime Operations
 
-- `GetConfig(name string) (T, error)`: Retrieves a configuration value (non-secret only).
+- `SetConfigOption(name string, option ConfigOptionInterface) error`: Registers a configuration option.
 
-- `InternalGetConfig(name string) (T, error)`: Retrieves any configuration value, including secrets (for internal Go code only).
+- `Initialize() error`: Finalizes the module configuration and verifies required values.
 
 - `ListConfigs() map[string]map[string]interface{}`: Returns information about all configurations.
+
+- `GetConfigOption(name string) (ConfigOptionInterface, error)`: Retrieves a configuration option by name.
+
+- `GetConfigValue[T any](m *ConfigurableModule, name string) (T, error)`: Helper function to retrieve a typed configuration value.
+
+- `SetConfigValue[T any](m *ConfigurableModule, name string, value T) error`: Helper function to set a typed configuration value.
 
 - `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`: Creates a Starlark module.
 
@@ -235,12 +277,11 @@ When you load the module in Starlark, these functions are automatically provided
 
 - `set_<config_name>(value)`: Sets a configuration value (available for all configs).
 - `get_<config_name>()`: Gets a configuration value (only available for non-secret configs).
-- `list_configs()`: Returns information about all configurations (values hidden for secret configs).
 
 #### Example
 
 ```python
-load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "list_configs", "do_something")
+load("mymodule", "set_api_key", "get_endpoint", "get_timestamp", "do_something")
 
 # Set configuration (both secret and non-secret configs can be set)
 set_api_key("new-api-key")
@@ -253,49 +294,29 @@ print("Using endpoint:", endpoint)
 timestamp = get_timestamp()
 print("Current timestamp:", timestamp)
 
-# Inspect configurations (secret values will be hidden)
-configs = list_configs()
-for name, info in configs.items():
-    print(f"Config {name}: {info['description']}")
-
 # Use the module functionality
 do_something()
 ```
 
-## Value Priority Handling
-
-When both a direct value is set and a getter function is provided, the value returned depends on the configured priority:
-
-1. **PrioritySetValue** (default): Explicitly set values take precedence over dynamic getter functions. This allows overriding dynamic default values.
-
-2. **PriorityGetter**: Dynamic getter functions take precedence over explicitly set values. This is useful for values that should always be fresh, like timestamps or environment-specific information.
-
-You can control this behavior using the `PreferGetter()` and `PreferSetValue()` methods:
-
-```go
-// Always use the getter, even if a value is explicitly set
-option := NewConfigOption("").
-    WithDescription("Current server time").
-    WithGetter(func() string { return time.Now().Format(time.RFC3339) }).
-    PreferGetter()
-
-// Use the explicitly set value, falling back to the getter if no value is set (default behavior)
-option := NewConfigOption("default").
-    WithDescription("Base URL").
-    WithGetter(func() string { return getEnvironmentBaseURL() }).
-    PreferSetValue()
-```
-
 ## Secret Configuration Handling
 
-Configurations marked as `Secret()` are handled differently:
+Configurations marked as secret using `SetSecret(true)` are handled differently:
 
-1. Secret configs can be set from both Go code and Starlark scripts using `SetConfigValue` and `set_<name>` functions.
-2. Secret configs cannot be accessed directly from Starlark code - no `get_<name>` function is exposed.
-3. Secret configs are not displayed in the `list_configs()` output values.
-4. Go code can access secret configs internally using the `InternalGetConfig` method.
+1. Secret configs can be set from both Go code and Starlark scripts.
+2. Secret configs cannot be accessed from Starlark code - no `get_<name>` function is exposed.
+3. Secret config values are not shown in `ListConfigs()` output.
+4. Go code can still access secret configs using `GetConfigValue`.
 
 This design ensures that sensitive information like API keys can be set by Starlark scripts but cannot be accidentally leaked or exposed.
+
+## Environment Variable Integration
+
+Any configuration option can be tied to an environment variable using `WithEnvVar`. The system will:
+
+1. Try to convert the environment variable string to the target type
+2. Support common string formats for booleans (true/false, yes/no, 1/0, on/off)
+3. Convert numeric types appropriately (int, float, etc.)
+4. Parse JSON for complex types like slices and maps
 
 ## Contributing
 
