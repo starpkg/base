@@ -151,6 +151,18 @@ func TestStarlarkIntegration(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for invalid map key type, got nil")
 		}
+
+		complexOpt := base.NewConfigOption(complex(1, 2))
+		err = complexOpt.SetValueFromStarlark(&starlark.Builtin{})
+		if err == nil {
+			t.Error("Expected error for invalid complex number, got nil")
+		}
+
+		complexMapOpt := base.NewConfigOption(map[string]complex64{"a": complex(float32(1), float32(2))})
+		err = complexMapOpt.SetValueFromStarlark(dict)
+		if err == nil {
+			t.Error("Expected error for invalid complex number, got nil")
+		}
 	})
 
 	// Test edge cases

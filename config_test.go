@@ -441,6 +441,7 @@ func TestConfigOption(t *testing.T) {
 		// Set up environment variables for testing
 		os.Setenv("TEST_ENV_STRING", "env_value")
 		os.Setenv("TEST_ENV_INT", "42")
+		os.Setenv("TEST_ENV_UINT", "100")
 		os.Setenv("TEST_ENV_BOOL", "true")
 		os.Setenv("TEST_ENV_FLOAT", "3.14")
 		os.Setenv("TEST_ENV_LIST", "[1, 2, 3]")
@@ -481,6 +482,19 @@ func TestConfigOption(t *testing.T) {
 				t.Fatalf("GetValue failed: %v", err)
 			}
 			if val != 42 {
+				t.Errorf("Expected environment value 42, got %d", val)
+			}
+		})
+
+		// Test environment variable with unsigned int type
+		t.Run("UintEnvVar", func(t *testing.T) {
+			opt := base.NewConfigOption(uint(0)).WithEnvVar("TEST_ENV_UINT")
+
+			val, err := opt.GetValue()
+			if err != nil {
+				t.Fatalf("GetValue failed: %v", err)
+			}
+			if val != uint(100) {
 				t.Errorf("Expected environment value 42, got %d", val)
 			}
 		})

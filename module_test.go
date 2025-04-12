@@ -79,7 +79,7 @@ func TestConfigurableModule(t *testing.T) {
 		module := base.NewConfigurableModule()
 
 		// Add a non-required config
-		module.SetConfigOption("non_required", base.NewConfigOption("default"))
+		module.SetConfigOption("", base.NewConfigOption("default"))
 
 		// Initialize should succeed
 		err := module.Initialize()
