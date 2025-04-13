@@ -111,6 +111,37 @@ func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableMod
 	return m, nil
 }
 
+// NewConfigurableModuleWithConfigOptions returns a new instance of ConfigurableModule with the provided ConfigOptions added.
+// Unlike NewConfigurableModuleWithOptions which takes functional ModuleOptions, this function directly accepts
+// the actual ConfigOption instances. This is a more convenient way to create a module when you have ConfigOption
+// instances directly.
+//
+// The name of each option is inferred from its Name field if set, otherwise a generated name will be used
+// following the pattern "option_1", "option_2", etc.
+//
+// Example:
+//
+//	// Create config options
+//	strOpt := base.NewConfigOption("default_str").WithName("string_option")
+//	intOpt := base.NewConfigOption(42).WithName("int_option")
+//
+//	// Create module with options
+//	module, err := base.NewConfigurableModuleWithConfigOptions(strOpt, intOpt)
+func NewConfigurableModuleWithConfigOptions(options ...ConfigOptionInterface) (*ConfigurableModule, error) {
+	m := NewConfigurableModule()
+	for i, opt := range options {
+		name := opt.GetName()
+		if name == "" {
+			name = fmt.Sprintf("option_%d", i+1)
+			opt.SetName(name)
+		}
+		if err := m.SetConfigOption(name, opt); err != nil {
+			return nil, fmt.Errorf("failed to add config option %q: %w", name, err)
+		}
+	}
+	return m, nil
+}
+
 // SetConfigOption registers a configuration option for the module.
 func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInterface) error {
 	m.mu.Lock()

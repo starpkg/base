@@ -1480,3 +1480,79 @@ func TestWithConfigEnvVar(t *testing.T) {
 		t.Errorf("Expected explicit value 'explicit_value' to take precedence, got '%s'", complexVal)
 	}
 }
+
+// TestNewConfigurableModuleWithConfigOptions tests the constructor that takes ConfigOptionInterface directly
+func TestNewConfigurableModuleWithConfigOptions(t *testing.T) {
+	// Test the new constructor with config options of different types
+	strOpt := base.NewConfigOption("string value").WithName("string_opt").WithDescription("A string option")
+	intOpt := base.NewConfigOption(42).WithName("int_opt").WithDescription("An integer option")
+	boolOpt := base.NewConfigOption(true) // No name set
+
+	// Create a module with the options
+	module, err := base.NewConfigurableModuleWithConfigOptions(strOpt, intOpt, boolOpt)
+	if err != nil {
+		t.Fatalf("NewConfigurableModuleWithConfigOptions failed: %v", err)
+	}
+	if module == nil {
+		t.Fatal("NewConfigurableModuleWithConfigOptions should not return nil")
+	}
+
+	// Verify the options were set correctly
+	configs := module.ListConfigs()
+	if len(configs) != 3 {
+		t.Errorf("Expected 3 config options, got %d", len(configs))
+	}
+
+	// Check named options
+	if _, exists := configs["string_opt"]; !exists {
+		t.Error("string_opt should exist")
+	}
+	if _, exists := configs["int_opt"]; !exists {
+		t.Error("int_opt should exist")
+	}
+
+	// Check auto-named option (should be "option_3")
+	if _, exists := configs["option_3"]; !exists {
+		t.Error("auto-named option should exist as 'option_3'")
+	}
+
+	// Verify values can be retrieved
+	strVal, err := base.GetConfigValue[string](module, "string_opt")
+	if err != nil {
+		t.Fatalf("GetConfigValue for string_opt failed: %v", err)
+	}
+	if strVal != "string value" {
+		t.Errorf("Expected string_opt value 'string value', got '%s'", strVal)
+	}
+
+	intVal, err := base.GetConfigValue[int](module, "int_opt")
+	if err != nil {
+		t.Fatalf("GetConfigValue for int_opt failed: %v", err)
+	}
+	if intVal != 42 {
+		t.Errorf("Expected int_opt value 42, got %d", intVal)
+	}
+
+	boolVal, err := base.GetConfigValue[bool](module, "option_3")
+	if err != nil {
+		t.Fatalf("GetConfigValue for option_3 failed: %v", err)
+	}
+	if !boolVal {
+		t.Error("Expected option_3 value true, got false")
+	}
+
+	// Test with an already initialized module
+	initializedModule := base.NewConfigurableModule()
+	if err := initializedModule.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// Create a new option to add to an initialized module (should fail)
+	newOpt := base.NewConfigOption("new").WithName("new_opt")
+
+	// Use the module directly with SetConfigOption (bypassing the constructor)
+	err = initializedModule.SetConfigOption("new_opt", newOpt)
+	if !errors.Is(err, base.ErrModuleAlreadyInitialized) {
+		t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
+	}
+}
