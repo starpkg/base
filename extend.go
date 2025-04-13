@@ -21,7 +21,7 @@ func (e *ConfigurableModuleExt) GetString(key string, defaultVal ...string) stri
 	if len(defaultVal) > 0 {
 		defVal = defaultVal[0]
 	}
-	return GetConfigValueWithDefault(e.ConfigurableModule, key, defVal)
+	return GetConfigValueWithFallback(e.ConfigurableModule, key, defVal)
 }
 
 // GetInt retrieves an int configuration value with an optional default value.
@@ -32,7 +32,7 @@ func (e *ConfigurableModuleExt) GetInt(key string, defaultVal ...int) int {
 	if len(defaultVal) > 0 {
 		defVal = defaultVal[0]
 	}
-	return GetConfigValueWithDefault(e.ConfigurableModule, key, defVal)
+	return GetConfigValueWithFallback(e.ConfigurableModule, key, defVal)
 }
 
 // GetUint retrieves an uint configuration value with an optional default value.
@@ -43,7 +43,7 @@ func (e *ConfigurableModuleExt) GetUint(key string, defaultVal ...uint) uint {
 	if len(defaultVal) > 0 {
 		defVal = defaultVal[0]
 	}
-	return GetConfigValueWithDefault(e.ConfigurableModule, key, defVal)
+	return GetConfigValueWithFallback(e.ConfigurableModule, key, defVal)
 }
 
 // GetBool retrieves a bool configuration value with an optional default value.
@@ -54,7 +54,7 @@ func (e *ConfigurableModuleExt) GetBool(key string, defaultVal ...bool) bool {
 	if len(defaultVal) > 0 {
 		defVal = defaultVal[0]
 	}
-	return GetConfigValueWithDefault(e.ConfigurableModule, key, defVal)
+	return GetConfigValueWithFallback(e.ConfigurableModule, key, defVal)
 }
 
 // GetFloat retrieves a float64 configuration value with an optional default value.
@@ -65,5 +65,5 @@ func (e *ConfigurableModuleExt) GetFloat(key string, defaultVal ...float64) floa
 	if len(defaultVal) > 0 {
 		defVal = defaultVal[0]
 	}
-	return GetConfigValueWithDefault(e.ConfigurableModule, key, defVal)
+	return GetConfigValueWithFallback(e.ConfigurableModule, key, defVal)
 }

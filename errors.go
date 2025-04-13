@@ -18,4 +18,8 @@ var (
 	ErrModuleAlreadyInitialized = errors.New("module already initialized")
 	// ErrSecretConfigNotRetrievable is the error when attempting to retrieve a secret configuration value.
 	ErrSecretConfigNotRetrievable = errors.New("secret configuration is not retrievable")
+	// ErrModuleNotInitialized is the error when trying to access a module that's not initialized.
+	ErrModuleNotInitialized = errors.New("module not initialized")
+	// ErrConfigOptionNotFound is the error when a configuration option is not found.
+	ErrConfigOptionNotFound = errors.New("config option not found")
 )

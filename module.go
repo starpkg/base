@@ -216,10 +216,10 @@ func SetTypedConfigOption[T any](m *ConfigurableModule, name string, option *Con
 
 // GetConfigValue returns the value of a configuration option.
 func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
+	var zero T
 	m.mu.RLock()
 	option, exists := m.configs[name]
 	m.mu.RUnlock()
-	var zero T
 	if !exists {
 		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
@@ -230,8 +230,8 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 	return typedOption.GetValue()
 }
 
-// GetConfigValueWithDefault returns the value of a configuration option with a default value if not found or if there's an error.
-// This is a convenience function to avoid repeating the pattern of checking for errors and using defaults.
+// GetConfigValueWithFallback returns the value of a configuration option with a fallback value if not found or if there's an error.
+// This is the recommended general-purpose function for retrieving configuration values, as it handles error cases gracefully.
 //
 // Example:
 //
@@ -242,13 +242,13 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 //	}
 //
 //	// You can use:
-//	val := base.GetConfigValueWithDefault(m.cfgMod, key, defaultVal)
+//	val := base.GetConfigValueWithFallback(m.cfgMod, key, fallbackVal)
 //
 // For even more convenience, use the ConfigurableModuleExt methods via the Extend() function.
-func GetConfigValueWithDefault[T any](m *ConfigurableModule, name string, defaultVal T) T {
+func GetConfigValueWithFallback[T any](m *ConfigurableModule, name string, fallbackVal T) T {
 	val, err := GetConfigValue[T](m, name)
 	if err != nil {
-		return defaultVal
+		return fallbackVal
 	}
 	return val
 }
