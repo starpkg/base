@@ -514,7 +514,7 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 	return zero, false
 }
 
-// GetWithDefault returns the current value of the configuration option or the provided default value if retrieval fails.
+// GetValueOrFallback returns the current value of the configuration option or the provided fallback value if retrieval fails.
 // This is a convenience method to avoid having to handle errors when getting config values.
 //
 // Example:
@@ -522,27 +522,17 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 //	// Instead of:
 //	val, err := option.GetValue()
 //	if err != nil {
-//	    val = defaultVal
+//	    val = fallbackVal
 //	}
 //
 //	// You can use:
-//	val := option.GetWithDefault(defaultVal)
+//	val := option.GetValueOrFallback(fallbackVal)
 //
 // This is especially useful for secret values that would otherwise cause errors when retrieved directly.
-func (o *ConfigOption[T]) GetWithDefault(defaultVal T) T {
+func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) T {
 	val, err := o.GetValue()
 	if err != nil {
-		return defaultVal
+		return fallbackVal
 	}
-
-	// Special handling for string type to handle empty string case
-	var zero T
-	if reflect.TypeOf(zero).Kind() == reflect.String {
-		// If the value is an empty string, return the default value
-		if reflect.ValueOf(val).String() == "" {
-			return defaultVal
-		}
-	}
-
 	return val
 }
