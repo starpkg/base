@@ -823,4 +823,43 @@ func TestConfigOption(t *testing.T) {
 	if complex128Val != complex128Default {
 		t.Errorf("Expected default complex128 value %v, got %v", complex128Default, complex128Val)
 	}
+
+	// Test WithDefault method
+	t.Run("WithDefault", func(t *testing.T) {
+		// Test setting default value with WithDefault
+		opt := base.NewConfigOption("original_default").WithDefault("new_default")
+
+		// Check that default value is updated
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "new_default" {
+			t.Errorf("Expected new default value 'new_default', got '%s'", val)
+		}
+
+		// Test that HasDefault returns true for non-zero default
+		if !opt.HasDefault() {
+			t.Error("HasDefault should return true after using WithDefault with non-zero value")
+		}
+
+		// Test that explicit value takes precedence over default
+		opt.WithValue("explicit_value")
+		val, err = opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "explicit_value" {
+			t.Errorf("Expected explicit value 'explicit_value', got '%s'", val)
+		}
+
+		// Test setting default to zero value
+		var zero string
+		zeroOpt := base.NewConfigOption("original_default").WithDefault(zero)
+
+		// HasDefault should return false for zero value
+		if zeroOpt.HasDefault() {
+			t.Error("HasDefault should return false after setting default to zero value")
+		}
+	})
 }

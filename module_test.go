@@ -1120,6 +1120,278 @@ func TestSetConfigEnvVar(t *testing.T) {
 	}
 }
 
+// TestSetConfigDefault tests setting default values for config options
+func TestSetConfigDefault(t *testing.T) {
+	t.Run("SetDefaultForExistingOption", func(t *testing.T) {
+		m := base.NewConfigurableModule()
+
+		// Create and set a config option
+		opt := base.NewConfigOption("original_default")
+		if err := m.SetConfigOption("option1", opt); err != nil {
+			t.Fatalf("Failed to set config option: %v", err)
+		}
+
+		// Set a new default value
+		if err := base.SetConfigDefault(m, "option1", "new_default"); err != nil {
+			t.Fatalf("SetConfigDefault failed: %v", err)
+		}
+
+		// Retrieve the option and verify the default value
+		retrievedOpt, err := m.GetConfigOption("option1")
+		if err != nil {
+			t.Fatalf("Failed to get config option: %v", err)
+		}
+
+		typedOpt, ok := retrievedOpt.(*base.ConfigOption[string])
+		if !ok {
+			t.Fatal("Failed to cast to ConfigOption[string]")
+		}
+
+		val, err := typedOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if val != "new_default" {
+			t.Errorf("Expected default value 'new_default', got '%s'", val)
+		}
+	})
+
+	t.Run("SetDefaultCreatesNewOption", func(t *testing.T) {
+		m := base.NewConfigurableModule()
+
+		// Set default value for a non-existent option (should create it)
+		if err := base.SetConfigDefault(m, "option1", "default_value"); err != nil {
+			t.Fatalf("SetConfigDefault failed: %v", err)
+		}
+
+		// Retrieve the option and verify it was created
+		retrievedOpt, err := m.GetConfigOption("option1")
+		if err != nil {
+			t.Fatalf("Failed to get config option: %v", err)
+		}
+
+		typedOpt, ok := retrievedOpt.(*base.ConfigOption[string])
+		if !ok {
+			t.Fatal("Failed to cast to ConfigOption[string]")
+		}
+
+		val, err := typedOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if val != "default_value" {
+			t.Errorf("Expected default value 'default_value', got '%s'", val)
+		}
+	})
+
+	t.Run("SetDefaultAfterInitialize", func(t *testing.T) {
+		m := base.NewConfigurableModule()
+
+		// Initialize the module
+		if err := m.Initialize(); err != nil {
+			t.Fatalf("Initialize failed: %v", err)
+		}
+
+		// Try to set a default value after initialization
+		err := base.SetConfigDefault(m, "option1", "default_value")
+		if !errors.Is(err, base.ErrModuleAlreadyInitialized) {
+			t.Errorf("Expected ErrModuleAlreadyInitialized, got %v", err)
+		}
+	})
+
+	t.Run("SetDefaultTypeMismatch", func(t *testing.T) {
+		m := base.NewConfigurableModule()
+
+		// Create a config option with int type
+		opt := base.NewConfigOption(42)
+		if err := m.SetConfigOption("option1", opt); err != nil {
+			t.Fatalf("Failed to set config option: %v", err)
+		}
+
+		// Try to set a default value with wrong type
+		err := base.SetConfigDefault(m, "option1", "string_value")
+		if err == nil {
+			t.Error("Expected error when setting default with wrong type, got nil")
+		}
+	})
+}
+
+// TestWithConfigDefault tests the WithConfigDefault module option
+func TestWithConfigDefault(t *testing.T) {
+	t.Run("UseWithinNewModule", func(t *testing.T) {
+		// Create a module with the WithConfigDefault option
+		m, err := base.NewConfigurableModuleWithOptions(
+			base.WithConfigDefault("option1", "default_value"),
+		)
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+		}
+
+		// Verify that the option was created with the default value
+		val, err := base.GetConfigValue[string](m, "option1")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+
+		if val != "default_value" {
+			t.Errorf("Expected default value 'default_value', got '%s'", val)
+		}
+	})
+
+	t.Run("CombineWithOtherOptions", func(t *testing.T) {
+		// Create a module with multiple options
+		m, err := base.NewConfigurableModuleWithOptions(
+			base.WithConfigDefault("option1", "default_value"),
+			base.WithConfigValue("option2", "explicit_value"),
+			base.WithConfigEnvVar[string]("option1", "TEST_ENV_VAR"), // Add env var to option1
+		)
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+		}
+
+		// Verify that both options were set correctly
+		val1, err := base.GetConfigValue[string](m, "option1")
+		if err != nil {
+			t.Fatalf("GetConfigValue for option1 failed: %v", err)
+		}
+
+		val2, err := base.GetConfigValue[string](m, "option2")
+		if err != nil {
+			t.Fatalf("GetConfigValue for option2 failed: %v", err)
+		}
+
+		if val1 != "default_value" {
+			t.Errorf("Expected default value 'default_value' for option1, got '%s'", val1)
+		}
+
+		if val2 != "explicit_value" {
+			t.Errorf("Expected value 'explicit_value' for option2, got '%s'", val2)
+		}
+
+		// Verify that the env var was set on option1
+		opt, err := m.GetConfigOption("option1")
+		if err != nil {
+			t.Fatalf("GetConfigOption failed: %v", err)
+		}
+
+		if !opt.HasEnvVar() {
+			t.Error("Expected option1 to have an environment variable set")
+		}
+	})
+
+	t.Run("PriorityWithEnvVar", func(t *testing.T) {
+		// Set an environment variable
+		os.Setenv("TEST_DEFAULT_ENV", "env_value")
+		defer os.Unsetenv("TEST_DEFAULT_ENV")
+
+		// Create a module with default and env var
+		m, err := base.NewConfigurableModuleWithOptions(
+			base.WithConfigDefault("option1", "default_value"),
+			base.WithConfigEnvVar[string]("option1", "TEST_DEFAULT_ENV"),
+		)
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithOptions failed: %v", err)
+		}
+
+		// Env var should take precedence over default
+		val, err := base.GetConfigValue[string](m, "option1")
+		if err != nil {
+			t.Fatalf("GetConfigValue failed: %v", err)
+		}
+
+		if val != "env_value" {
+			t.Errorf("Expected env value 'env_value' to take precedence over default, got '%s'", val)
+		}
+	})
+}
+
+func TestConfigurableModule_SetAndGetValue(t *testing.T) {
+	// Create a new module
+	module := base.NewConfigurableModule()
+
+	// Set a value
+	err := base.SetConfigValue(module, "test", "test_value")
+	if err != nil {
+		t.Fatalf("Failed to set value: %v", err)
+	}
+
+	// Get the value
+	value, err := base.GetConfigValue[string](module, "test")
+	if err != nil {
+		t.Fatalf("Failed to get value: %v", err)
+	}
+
+	if value != "test_value" {
+		t.Errorf("Expected value 'test_value', got '%s'", value)
+	}
+}
+
+func TestConfigurableModule_ImmutableAfterInit(t *testing.T) {
+	m := base.NewConfigurableModule()
+	if err := base.SetConfigValue(m, "port", 8080); err != nil {
+		t.Fatalf("Failed to set config: %v", err)
+	}
+	if err := m.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize module: %v", err)
+	}
+	if err := base.SetConfigValue(m, "port", 9090); err == nil {
+		t.Fatalf("Expected error when setting config after initialization, but got none")
+	} else if err != base.ErrModuleAlreadyInitialized {
+		t.Fatalf("Expected ErrModuleAlreadyInitialized, got %v", err)
+	}
+}
+func TestConfigOption_Secret(t *testing.T) {
+	// Create a secret config option
+	opt := base.NewConfigOption[string]("secret").WithName("api_key")
+	opt.SetSecret(true)
+	_, err := opt.GetValue()
+	if err == nil {
+		t.Errorf("Expected error retrieving secret config, got nil")
+	}
+	// Verify that the secret config does not expose its value in GetInfo
+	info := opt.GetInfo()
+	if _, ok := info["value"]; ok {
+		t.Errorf("Secret config should not expose its value in GetInfo")
+	}
+}
+
+func TestConfigOption_WithEnvVar(t *testing.T) {
+	// Set environment variable and ensure it overrides the default
+	os.Setenv("TEST_ENV", "environment_value")
+	defer os.Unsetenv("TEST_ENV")
+	opt := base.NewConfigOption[string]("default").WithName("config1").WithEnvVar("TEST_ENV")
+	value, err := opt.GetValue()
+	if err != nil {
+		t.Fatalf("Failed to get env var overridden value: %v", err)
+	}
+	if value != "environment_value" {
+		t.Errorf("Expected environment value 'environment_value', got %v", value)
+	}
+}
+
+func TestSetConfigValueTypeMismatch(t *testing.T) {
+	module := base.NewConfigurableModule()
+
+	// First, set an initial string config
+	err := base.SetConfigValue(module, "test_option", "string value")
+	if err != nil {
+		t.Fatalf("Failed to set initial string value: %v", err)
+	}
+
+	// Now try to set it with a different type (int)
+	err = base.SetConfigValue(module, "test_option", 42)
+	if err == nil {
+		t.Error("Expected error when setting value with different type, got nil")
+	}
+
+	// Verify the error message mentions type mismatch
+	if err != nil && !strings.Contains(err.Error(), "cannot set value of different type") {
+		t.Errorf("Expected type mismatch error, got: %v", err)
+	}
+}
+
 // TestWithConfigEnvVar tests the WithConfigEnvVar module option
 func TestWithConfigEnvVar(t *testing.T) {
 	// Set up test environment variables
@@ -1206,90 +1478,5 @@ func TestWithConfigEnvVar(t *testing.T) {
 	}
 	if complexVal != "explicit_value" {
 		t.Errorf("Expected explicit value 'explicit_value' to take precedence, got '%s'", complexVal)
-	}
-}
-
-func TestConfigurableModule_SetAndGetValue(t *testing.T) {
-	// Create a new module
-	module := base.NewConfigurableModule()
-
-	// Set a value
-	err := base.SetConfigValue(module, "test", "test_value")
-	if err != nil {
-		t.Fatalf("Failed to set value: %v", err)
-	}
-
-	// Get the value
-	value, err := base.GetConfigValue[string](module, "test")
-	if err != nil {
-		t.Fatalf("Failed to get value: %v", err)
-	}
-
-	if value != "test_value" {
-		t.Errorf("Expected value 'test_value', got '%s'", value)
-	}
-}
-
-func TestConfigurableModule_ImmutableAfterInit(t *testing.T) {
-	m := base.NewConfigurableModule()
-	if err := base.SetConfigValue(m, "port", 8080); err != nil {
-		t.Fatalf("Failed to set config: %v", err)
-	}
-	if err := m.Initialize(); err != nil {
-		t.Fatalf("Failed to initialize module: %v", err)
-	}
-	if err := base.SetConfigValue(m, "port", 9090); err == nil {
-		t.Fatalf("Expected error when setting config after initialization, but got none")
-	} else if err != base.ErrModuleAlreadyInitialized {
-		t.Fatalf("Expected ErrModuleAlreadyInitialized, got %v", err)
-	}
-}
-func TestConfigOption_Secret(t *testing.T) {
-	// Create a secret config option
-	opt := base.NewConfigOption[string]("secret").WithName("api_key")
-	opt.SetSecret(true)
-	_, err := opt.GetValue()
-	if err == nil {
-		t.Errorf("Expected error retrieving secret config, got nil")
-	}
-	// Verify that the secret config does not expose its value in GetInfo
-	info := opt.GetInfo()
-	if _, ok := info["value"]; ok {
-		t.Errorf("Secret config should not expose its value in GetInfo")
-	}
-}
-
-func TestConfigOption_WithEnvVar(t *testing.T) {
-	// Set environment variable and ensure it overrides the default
-	os.Setenv("TEST_ENV", "environment_value")
-	defer os.Unsetenv("TEST_ENV")
-	opt := base.NewConfigOption[string]("default").WithName("config1").WithEnvVar("TEST_ENV")
-	value, err := opt.GetValue()
-	if err != nil {
-		t.Fatalf("Failed to get env var overridden value: %v", err)
-	}
-	if value != "environment_value" {
-		t.Errorf("Expected environment value 'environment_value', got %v", value)
-	}
-}
-
-func TestSetConfigValueTypeMismatch(t *testing.T) {
-	module := base.NewConfigurableModule()
-
-	// First, set an initial string config
-	err := base.SetConfigValue(module, "test_option", "string value")
-	if err != nil {
-		t.Fatalf("Failed to set initial string value: %v", err)
-	}
-
-	// Now try to set it with a different type (int)
-	err = base.SetConfigValue(module, "test_option", 42)
-	if err == nil {
-		t.Error("Expected error when setting value with different type, got nil")
-	}
-
-	// Verify the error message mentions type mismatch
-	if err != nil && !strings.Contains(err.Error(), "cannot set value of different type") {
-		t.Errorf("Expected type mismatch error, got: %v", err)
 	}
 }

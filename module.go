@@ -62,6 +62,13 @@ func WithConfigValue[T any](name string, value T) ModuleOption {
 	}
 }
 
+// WithConfigDefault sets a default value for the configuration.
+func WithConfigDefault[T any](name string, defaultValue T) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigDefault(m, name, defaultValue)
+	}
+}
+
 // WithConfigGetter registers a dynamic getter for the configuration.
 func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
@@ -270,6 +277,26 @@ func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) e
 	}
 	var zero T
 	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
+	m.configs[name] = newOption
+	return nil
+}
+
+// SetConfigDefault sets a default value for the configuration.
+func SetConfigDefault[T any](m *ConfigurableModule, name string, defaultValue T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set default value of different type for config '%s'", name)
+		}
+		typedOption.WithDefault(defaultValue)
+		return nil
+	}
+	newOption := NewConfigOption(defaultValue).WithName(name)
 	m.configs[name] = newOption
 	return nil
 }

@@ -94,6 +94,14 @@ func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
 	return o
 }
 
+// WithDefault sets the default value of the configuration option.
+func (o *ConfigOption[T]) WithDefault(defaultValue T) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.defaultVal = defaultValue
+	return o
+}
+
 // WithValidator adds a validator to the configuration option.
 func (o *ConfigOption[T]) WithValidator(validator ConfigValidator[T]) *ConfigOption[T] {
 	o.mu.Lock()
