@@ -230,6 +230,29 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 	return typedOption.GetValue()
 }
 
+// GetConfigValueWithDefault returns the value of a configuration option with a default value if not found or if there's an error.
+// This is a convenience function to avoid repeating the pattern of checking for errors and using defaults.
+//
+// Example:
+//
+//	// Instead of:
+//	val, err := base.GetConfigValue[string](m.cfgMod, key)
+//	if err != nil {
+//	    val = defaultVal
+//	}
+//
+//	// You can use:
+//	val := base.GetConfigValueWithDefault(m.cfgMod, key, defaultVal)
+//
+// For even more convenience, use the ConfigurableModuleExt methods via the Extend() function.
+func GetConfigValueWithDefault[T any](m *ConfigurableModule, name string, defaultVal T) T {
+	val, err := GetConfigValue[T](m, name)
+	if err != nil {
+		return defaultVal
+	}
+	return val
+}
+
 // SetConfigValue sets the configuration value.
 // This has the highest priority in the resolution order.
 func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {

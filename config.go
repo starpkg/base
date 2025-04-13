@@ -513,3 +513,26 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 
 	return zero, false
 }
+
+// GetWithDefault returns the current value of the configuration option or the provided default value if retrieval fails.
+// This is a convenience method to avoid having to handle errors when getting config values.
+//
+// Example:
+//
+//	// Instead of:
+//	val, err := option.GetValue()
+//	if err != nil {
+//	    val = defaultVal
+//	}
+//
+//	// You can use:
+//	val := option.GetWithDefault(defaultVal)
+//
+// This is especially useful for secret values that would otherwise cause errors when retrieved directly.
+func (o *ConfigOption[T]) GetWithDefault(defaultVal T) T {
+	val, err := o.GetValue()
+	if err != nil {
+		return defaultVal
+	}
+	return val
+}
