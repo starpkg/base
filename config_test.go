@@ -282,68 +282,56 @@ func TestConfigOption(t *testing.T) {
 
 	// Test priority order of value resolution
 	t.Run("PriorityOrder", func(t *testing.T) {
-		// Test that immediate value takes precedence over getter
-		t.Run("ImmediateValueOverGetter", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithGetter(func() string { return "getter_value" }).
-				WithValue("immediate_value")
+		// Test the priority order
+		key := "PRIORITY_TEST_ENV_VAR"
+		t.Setenv(key, "env-value")
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "immediate_value" {
-				t.Errorf("Expected immediate value 'immediate_value', got '%s'", val)
-			}
-		})
+		// Create option with all possible values
+		opt := base.NewConfigOption("default-value").
+			WithValue("immediate-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
 
-		// Test that getter takes precedence over environment variable
-		t.Run("GetterOverEnvVar", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithGetter(func() string { return "getter_value" }).
-				WithEnvVar("TEST_ENV_VAR")
+		// Immediate value should have highest priority
+		if val := opt.GetWithDefault("default-param"); val != "immediate-value" {
+			t.Errorf("Expected immediate-value, got '%s'", val)
+		}
 
-			os.Setenv("TEST_ENV_VAR", "env_value")
-			defer os.Unsetenv("TEST_ENV_VAR")
+		// Create option without immediate value
+		opt = base.NewConfigOption("default-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "getter_value" {
-				t.Errorf("Expected getter value 'getter_value', got '%s'", val)
-			}
-		})
+		// Getter should have second highest priority
+		if val := opt.GetWithDefault("default-param"); val != "getter-value" {
+			t.Errorf("Expected getter-value, got '%s'", val)
+		}
 
-		// Test that environment variable takes precedence over default
-		t.Run("EnvVarOverDefault", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithEnvVar("TEST_ENV_VAR")
+		// Create option without getter
+		opt = base.NewConfigOption("default-value").
+			WithEnvVar(key)
 
-			os.Setenv("TEST_ENV_VAR", "env_value")
-			defer os.Unsetenv("TEST_ENV_VAR")
+		// Env var should have third highest priority
+		if val := opt.GetWithDefault("default-param"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "env_value" {
-				t.Errorf("Expected env value 'env_value', got '%s'", val)
-			}
-		})
+		// Create option with only default value
+		opt = base.NewConfigOption("default-value")
 
-		// Test that default value is used when no other sources are available
-		t.Run("DefaultValue", func(t *testing.T) {
-			opt := base.NewConfigOption("default")
+		// Default should have lowest priority
+		if val := opt.GetWithDefault("default-param"); val != "default-value" {
+			t.Errorf("Expected default-value, got '%s'", val)
+		}
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "default" {
-				t.Errorf("Expected default value 'default', got '%s'", val)
-			}
-		})
+		// Test with explicitly empty default value
+		var emptyString string // Using explicit variable for clarity
+		opt = base.NewConfigOption(emptyString)
+
+		// When default is empty, it should return provided parameter
+		if val := opt.GetWithDefault("default-param"); val != "default-param" {
+			t.Errorf("Expected default-param, got '%s'", val)
+		}
 	})
 
 	// Test GetInfo deadlock prevention
@@ -860,6 +848,206 @@ func TestConfigOption(t *testing.T) {
 		// HasDefault should return false for zero value
 		if zeroOpt.HasDefault() {
 			t.Error("HasDefault should return false after setting default to zero value")
+		}
+	})
+}
+
+func TestConfigOptionGetWithDefault(t *testing.T) {
+	t.Run("WithValue", func(t *testing.T) {
+		// Test with string
+		optStr := base.NewConfigOption("").WithValue("actual value")
+		if val := optStr.GetWithDefault("default value"); val != "actual value" {
+			t.Errorf("Expected actual value, got %v", val)
+		}
+
+		// Test with int
+		optInt := base.NewConfigOption(0).WithValue(42)
+		if val := optInt.GetWithDefault(100); val != 42 {
+			t.Errorf("Expected 42, got %d", val)
+		}
+
+		// Test with bool
+		optBool := base.NewConfigOption(false).WithValue(true)
+		if val := optBool.GetWithDefault(false); val != true {
+			t.Errorf("Expected true, got %v", val)
+		}
+
+		// Test with float
+		optFloat := base.NewConfigOption(0.0).WithValue(3.14)
+		if val := optFloat.GetWithDefault(2.5); val != 3.14 {
+			t.Errorf("Expected 3.14, got %f", val)
+		}
+
+		// Test with slice
+		optSlice := base.NewConfigOption([]string{}).WithValue([]string{"a", "b", "c"})
+		defaultSlice := []string{"x", "y", "z"}
+		val := optSlice.GetWithDefault(defaultSlice)
+		if len(val) != 3 || val[0] != "a" || val[1] != "b" || val[2] != "c" {
+			t.Errorf("Expected [a b c], got %v", val)
+		}
+
+		// Test with map
+		optMap := base.NewConfigOption(map[string]int{}).WithValue(map[string]int{"a": 1, "b": 2})
+		defaultMap := map[string]int{"default": 99}
+		mapVal := optMap.GetWithDefault(defaultMap)
+		if len(mapVal) != 2 || mapVal["a"] != 1 || mapVal["b"] != 2 {
+			t.Errorf("Expected {a:1, b:2}, got %v", mapVal)
+		}
+
+		// Test with struct
+		type testStruct struct {
+			Name string
+			Age  int
+		}
+		actualStruct := testStruct{Name: "Actual", Age: 30}
+		defaultStruct := testStruct{Name: "Default", Age: 20}
+		optStruct := base.NewConfigOption(testStruct{}).WithValue(actualStruct)
+		structVal := optStruct.GetWithDefault(defaultStruct)
+		if structVal.Name != "Actual" || structVal.Age != 30 {
+			t.Errorf("Expected {Actual 30}, got %+v", structVal)
+		}
+	})
+
+	t.Run("WithGetter", func(t *testing.T) {
+		// Test with getter function
+		dynamicValue := "initial"
+		opt := base.NewConfigOption("").WithGetter(func() string {
+			return dynamicValue
+		})
+
+		// First call should return initial value
+		if val := opt.GetWithDefault("default"); val != "initial" {
+			t.Errorf("Expected initial, got %s", val)
+		}
+
+		// Change value and check again
+		dynamicValue = "updated"
+		if val := opt.GetWithDefault("default"); val != "updated" {
+			t.Errorf("Expected updated, got %s", val)
+		}
+	})
+
+	t.Run("WithSecret", func(t *testing.T) {
+		// Secret values should return the default
+		opt := base.NewConfigOption("secret-value").SetSecret(true)
+		if val := opt.GetWithDefault("default-value"); val != "default-value" {
+			t.Errorf("Expected default-value for secret config, got %s", val)
+		}
+	})
+
+	t.Run("WithNonExistentValue", func(t *testing.T) {
+		// Default should be returned when there's no other value source
+		// Create an option with an intentionally missing configuration
+		var testVal string
+		opt := base.NewConfigOption(testVal)
+
+		// When calling GetWithDefault, we get the default parameter
+		if val := opt.GetWithDefault("default-val"); val != "default-val" {
+			t.Errorf("Expected default-val, got '%s'", val)
+		}
+	})
+
+	t.Run("WithZeroValues", func(t *testing.T) {
+		// Test zero values vs default values
+		// String - empty strings now return the default value with our updated GetWithDefault
+		optStr := base.NewConfigOption("").WithValue("")
+		if val := optStr.GetWithDefault("default"); val != "default" {
+			t.Errorf("Expected default, got '%s'", val)
+		}
+
+		// Int
+		optInt := base.NewConfigOption(0).WithValue(0)
+		if val := optInt.GetWithDefault(100); val != 0 {
+			t.Errorf("Expected 0, got %d", val)
+		}
+
+		// Bool
+		optBool := base.NewConfigOption(false).WithValue(false)
+		if val := optBool.GetWithDefault(true); val != false {
+			t.Errorf("Expected false, got %v", val)
+		}
+
+		// Float
+		optFloat := base.NewConfigOption(0.0).WithValue(0.0)
+		if val := optFloat.GetWithDefault(2.5); val != 0.0 {
+			t.Errorf("Expected 0.0, got %f", val)
+		}
+	})
+
+	t.Run("WithEnvVar", func(t *testing.T) {
+		// Set an environment variable
+		key := "TEST_ENV_VAR_FOR_GET_WITH_DEFAULT"
+		t.Setenv(key, "env-value")
+
+		// Create option with env var
+		opt := base.NewConfigOption("").WithEnvVar(key)
+
+		// Should get the value from environment
+		if val := opt.GetWithDefault("default"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
+
+		// Now with a non-existent env var
+		nonExistentKey := "NON_EXISTENT_ENV_VAR_FOR_TEST"
+		opt = base.NewConfigOption("").WithEnvVar(nonExistentKey)
+
+		// Since env var doesn't exist and there's no default value set in the option,
+		// it should return the provided default value
+		if val := opt.GetWithDefault("default-val"); val != "default-val" {
+			t.Errorf("Expected default-val for non-existent env var, got '%s'", val)
+		}
+	})
+
+	t.Run("PriorityOrder", func(t *testing.T) {
+		// Test the priority order
+		key := "PRIORITY_TEST_ENV_VAR"
+		t.Setenv(key, "env-value")
+
+		// Create option with all possible values
+		opt := base.NewConfigOption("default-value").
+			WithValue("immediate-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
+
+		// Immediate value should have highest priority
+		if val := opt.GetWithDefault("default-param"); val != "immediate-value" {
+			t.Errorf("Expected immediate-value, got '%s'", val)
+		}
+
+		// Create option without immediate value
+		opt = base.NewConfigOption("default-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
+
+		// Getter should have second highest priority
+		if val := opt.GetWithDefault("default-param"); val != "getter-value" {
+			t.Errorf("Expected getter-value, got '%s'", val)
+		}
+
+		// Create option without getter
+		opt = base.NewConfigOption("default-value").
+			WithEnvVar(key)
+
+		// Env var should have third highest priority
+		if val := opt.GetWithDefault("default-param"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
+
+		// Create option with only default value
+		opt = base.NewConfigOption("default-value")
+
+		// Default should have lowest priority
+		if val := opt.GetWithDefault("default-param"); val != "default-value" {
+			t.Errorf("Expected default-value, got '%s'", val)
+		}
+
+		// Test with explicitly empty default value
+		var emptyString string // Using explicit variable for clarity
+		opt = base.NewConfigOption(emptyString)
+
+		// When default is empty, it should return provided parameter
+		if val := opt.GetWithDefault("default-param"); val != "default-param" {
+			t.Errorf("Expected default-param, got '%s'", val)
 		}
 	})
 }

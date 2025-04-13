@@ -534,5 +534,15 @@ func (o *ConfigOption[T]) GetWithDefault(defaultVal T) T {
 	if err != nil {
 		return defaultVal
 	}
+
+	// Special handling for string type to handle empty string case
+	var zero T
+	if reflect.TypeOf(zero).Kind() == reflect.String {
+		// If the value is an empty string, return the default value
+		if reflect.ValueOf(val).String() == "" {
+			return defaultVal
+		}
+	}
+
 	return val
 }
