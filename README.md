@@ -144,6 +144,10 @@ Create and configure typed options with builder pattern:
 apiKeyOption := base.NewConfigOption("").
     WithName("api_key").
     WithDescription("API key for service authentication").
+    WithValue("initial-key").         // Highest priority
+    WithGetter(fetchKeyFromVault).    // Second priority
+    WithEnvVar("API_KEY").            // Third priority
+    WithDefault("dev-key").           // Lowest priority
     WithValidator(func(val string) error {
         if len(val) < 10 {
             return errors.New("API key too short")

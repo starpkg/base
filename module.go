@@ -32,6 +32,12 @@ type ConfigOptionInterface interface {
 
 // ConfigurableModule provides a generic module that can be extended with different configurations.
 // Once initialized, the module becomes immutable.
+//
+// Configuration values are resolved in the following priority order (from highest to lowest):
+// 1. Immediate value (set via WithValue/SetValue)
+// 2. Returned value from the getter function (set via WithGetter)
+// 3. Environment variable value (set via WithEnvVar)
+// 4. Default value (set via WithDefault or NewConfigOption)
 type ConfigurableModule struct {
 	mu          sync.RWMutex
 	initialized bool
@@ -56,20 +62,15 @@ func WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOp
 }
 
 // WithConfigValue sets a configuration value directly.
+// This has the highest priority in the resolution order.
 func WithConfigValue[T any](name string, value T) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigValue(m, name, value)
 	}
 }
 
-// WithConfigDefault sets a default value for the configuration.
-func WithConfigDefault[T any](name string, defaultValue T) ModuleOption {
-	return func(m *ConfigurableModule) error {
-		return SetConfigDefault(m, name, defaultValue)
-	}
-}
-
 // WithConfigGetter registers a dynamic getter for the configuration.
+// This has the second highest priority in the resolution order.
 func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigGetter(m, name, getter)
@@ -77,9 +78,18 @@ func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 }
 
 // WithConfigEnvVar associates an environment variable with the configuration.
+// This has the third highest priority in the resolution order.
 func WithConfigEnvVar[T any](name string, envVar string) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigEnvVar[T](m, name, envVar)
+	}
+}
+
+// WithConfigDefault sets a default value for the configuration.
+// This has the lowest priority in the resolution order.
+func WithConfigDefault[T any](name string, defaultValue T) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigDefault(m, name, defaultValue)
 	}
 }
 
@@ -221,6 +231,7 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 }
 
 // SetConfigValue sets the configuration value.
+// This has the highest priority in the resolution order.
 func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -240,6 +251,7 @@ func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
 }
 
 // SetConfigGetter registers a dynamic getter for the configuration.
+// This has the second highest priority in the resolution order.
 func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGetter[T]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -261,6 +273,7 @@ func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGet
 }
 
 // SetConfigEnvVar associates an environment variable with the configuration.
+// This has the third highest priority in the resolution order.
 func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -282,6 +295,7 @@ func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) e
 }
 
 // SetConfigDefault sets a default value for the configuration.
+// This has the lowest priority in the resolution order.
 func SetConfigDefault[T any](m *ConfigurableModule, name string, defaultValue T) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
