@@ -32,6 +32,12 @@ type ConfigOptionInterface interface {
 
 // ConfigurableModule provides a generic module that can be extended with different configurations.
 // Once initialized, the module becomes immutable.
+//
+// Configuration values are resolved in the following priority order (from highest to lowest):
+// 1. Immediate value (set via WithValue/SetValue)
+// 2. Returned value from the getter function (set via WithGetter)
+// 3. Environment variable value (set via WithEnvVar)
+// 4. Default value (set via WithDefault or NewConfigOption)
 type ConfigurableModule struct {
 	mu          sync.RWMutex
 	initialized bool
@@ -56,6 +62,7 @@ func WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOp
 }
 
 // WithConfigValue sets a configuration value directly.
+// This has the highest priority in the resolution order.
 func WithConfigValue[T any](name string, value T) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigValue(m, name, value)
@@ -63,6 +70,7 @@ func WithConfigValue[T any](name string, value T) ModuleOption {
 }
 
 // WithConfigGetter registers a dynamic getter for the configuration.
+// This has the second highest priority in the resolution order.
 func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigGetter(m, name, getter)
@@ -70,9 +78,18 @@ func WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption {
 }
 
 // WithConfigEnvVar associates an environment variable with the configuration.
+// This has the third highest priority in the resolution order.
 func WithConfigEnvVar[T any](name string, envVar string) ModuleOption {
 	return func(m *ConfigurableModule) error {
 		return SetConfigEnvVar[T](m, name, envVar)
+	}
+}
+
+// WithConfigDefault sets a default value for the configuration.
+// This has the lowest priority in the resolution order.
+func WithConfigDefault[T any](name string, defaultValue T) ModuleOption {
+	return func(m *ConfigurableModule) error {
+		return SetConfigDefault(m, name, defaultValue)
 	}
 }
 
@@ -89,6 +106,37 @@ func NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableMod
 	for _, opt := range options {
 		if err := opt(m); err != nil {
 			return nil, fmt.Errorf("failed to apply module option: %w", err)
+		}
+	}
+	return m, nil
+}
+
+// NewConfigurableModuleWithConfigOptions returns a new instance of ConfigurableModule with the provided ConfigOptions added.
+// Unlike NewConfigurableModuleWithOptions which takes functional ModuleOptions, this function directly accepts
+// the actual ConfigOption instances. This is a more convenient way to create a module when you have ConfigOption
+// instances directly.
+//
+// The name of each option is inferred from its Name field if set, otherwise a generated name will be used
+// following the pattern "option_1", "option_2", etc.
+//
+// Example:
+//
+//	// Create config options
+//	strOpt := base.NewConfigOption("default_str").WithName("string_option")
+//	intOpt := base.NewConfigOption(42).WithName("int_option")
+//
+//	// Create module with options
+//	module, err := base.NewConfigurableModuleWithConfigOptions(strOpt, intOpt)
+func NewConfigurableModuleWithConfigOptions(options ...ConfigOptionInterface) (*ConfigurableModule, error) {
+	m := NewConfigurableModule()
+	for i, opt := range options {
+		name := opt.GetName()
+		if name == "" {
+			name = fmt.Sprintf("option_%d", i+1)
+			opt.SetName(name)
+		}
+		if err := m.SetConfigOption(name, opt); err != nil {
+			return nil, fmt.Errorf("failed to add config option %q: %w", name, err)
 		}
 	}
 	return m, nil
@@ -199,10 +247,10 @@ func SetTypedConfigOption[T any](m *ConfigurableModule, name string, option *Con
 
 // GetConfigValue returns the value of a configuration option.
 func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
+	var zero T
 	m.mu.RLock()
 	option, exists := m.configs[name]
 	m.mu.RUnlock()
-	var zero T
 	if !exists {
 		return zero, fmt.Errorf("%w: %s", ErrConfigNotSet, name)
 	}
@@ -213,7 +261,31 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 	return typedOption.GetValue()
 }
 
+// GetConfigValueWithFallback returns the value of a configuration option with a fallback value if not found or if there's an error.
+// This is the recommended general-purpose function for retrieving configuration values, as it handles error cases gracefully.
+//
+// Example:
+//
+//	// Instead of:
+//	val, err := base.GetConfigValue[string](m.cfgMod, key)
+//	if err != nil {
+//	    val = defaultVal
+//	}
+//
+//	// You can use:
+//	val := base.GetConfigValueWithFallback(m.cfgMod, key, fallbackVal)
+//
+// For even more convenience, use the ConfigurableModuleExt methods via the Extend() function.
+func GetConfigValueWithFallback[T any](m *ConfigurableModule, name string, fallbackVal T) T {
+	val, err := GetConfigValue[T](m, name)
+	if err != nil {
+		return fallbackVal
+	}
+	return val
+}
+
 // SetConfigValue sets the configuration value.
+// This has the highest priority in the resolution order.
 func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -233,6 +305,7 @@ func SetConfigValue[T any](m *ConfigurableModule, name string, value T) error {
 }
 
 // SetConfigGetter registers a dynamic getter for the configuration.
+// This has the second highest priority in the resolution order.
 func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGetter[T]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,6 +327,7 @@ func SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGet
 }
 
 // SetConfigEnvVar associates an environment variable with the configuration.
+// This has the third highest priority in the resolution order.
 func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -270,6 +344,27 @@ func SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) e
 	}
 	var zero T
 	newOption := NewConfigOption(zero).WithName(name).WithEnvVar(envVar)
+	m.configs[name] = newOption
+	return nil
+}
+
+// SetConfigDefault sets a default value for the configuration.
+// This has the lowest priority in the resolution order.
+func SetConfigDefault[T any](m *ConfigurableModule, name string, defaultValue T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.initialized {
+		return ErrModuleAlreadyInitialized
+	}
+	if option, exists := m.configs[name]; exists {
+		typedOption, ok := option.(*ConfigOption[T])
+		if !ok {
+			return fmt.Errorf("cannot set default value of different type for config '%s'", name)
+		}
+		typedOption.WithDefault(defaultValue)
+		return nil
+	}
+	newOption := NewConfigOption(defaultValue).WithName(name)
 	m.configs[name] = newOption
 	return nil
 }

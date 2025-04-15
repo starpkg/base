@@ -282,68 +282,56 @@ func TestConfigOption(t *testing.T) {
 
 	// Test priority order of value resolution
 	t.Run("PriorityOrder", func(t *testing.T) {
-		// Test that immediate value takes precedence over getter
-		t.Run("ImmediateValueOverGetter", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithGetter(func() string { return "getter_value" }).
-				WithValue("immediate_value")
+		// Test the priority order
+		key := "PRIORITY_TEST_ENV_VAR"
+		t.Setenv(key, "env-value")
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "immediate_value" {
-				t.Errorf("Expected immediate value 'immediate_value', got '%s'", val)
-			}
-		})
+		// Create option with all possible values
+		opt := base.NewConfigOption("default-value").
+			WithValue("immediate-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
 
-		// Test that getter takes precedence over environment variable
-		t.Run("GetterOverEnvVar", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithGetter(func() string { return "getter_value" }).
-				WithEnvVar("TEST_ENV_VAR")
+		// Immediate value should have highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "immediate-value" {
+			t.Errorf("Expected immediate-value, got '%s'", val)
+		}
 
-			os.Setenv("TEST_ENV_VAR", "env_value")
-			defer os.Unsetenv("TEST_ENV_VAR")
+		// Create option without immediate value
+		opt = base.NewConfigOption("default-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "getter_value" {
-				t.Errorf("Expected getter value 'getter_value', got '%s'", val)
-			}
-		})
+		// Getter should have second highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "getter-value" {
+			t.Errorf("Expected getter-value, got '%s'", val)
+		}
 
-		// Test that environment variable takes precedence over default
-		t.Run("EnvVarOverDefault", func(t *testing.T) {
-			opt := base.NewConfigOption("default").
-				WithEnvVar("TEST_ENV_VAR")
+		// Create option without getter
+		opt = base.NewConfigOption("default-value").
+			WithEnvVar(key)
 
-			os.Setenv("TEST_ENV_VAR", "env_value")
-			defer os.Unsetenv("TEST_ENV_VAR")
+		// Env var should have third highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "env_value" {
-				t.Errorf("Expected env value 'env_value', got '%s'", val)
-			}
-		})
+		// Create option with only default value
+		opt = base.NewConfigOption("default-value")
 
-		// Test that default value is used when no other sources are available
-		t.Run("DefaultValue", func(t *testing.T) {
-			opt := base.NewConfigOption("default")
+		// Default should have lowest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "default-value" {
+			t.Errorf("Expected default-value, got '%s'", val)
+		}
 
-			val, err := opt.GetValue()
-			if err != nil {
-				t.Fatalf("GetValue failed: %v", err)
-			}
-			if val != "default" {
-				t.Errorf("Expected default value 'default', got '%s'", val)
-			}
-		})
+		// Test with explicitly empty default value
+		var emptyString string // Using explicit variable for clarity
+		opt = base.NewConfigOption(emptyString)
+
+		// When default is empty string, it should return the empty string, not the fallback parameter
+		if val := opt.GetValueOrFallback("fallback-param"); val != "" {
+			t.Errorf("Expected empty string, got '%s'", val)
+		}
 	})
 
 	// Test GetInfo deadlock prevention
@@ -823,4 +811,244 @@ func TestConfigOption(t *testing.T) {
 	if complex128Val != complex128Default {
 		t.Errorf("Expected default complex128 value %v, got %v", complex128Default, complex128Val)
 	}
+
+	// Test WithDefault method
+	t.Run("WithDefault", func(t *testing.T) {
+		// Test setting default value with WithDefault
+		opt := base.NewConfigOption("original_default").WithDefault("new_default")
+
+		// Check that default value is updated
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "new_default" {
+			t.Errorf("Expected new default value 'new_default', got '%s'", val)
+		}
+
+		// Test that HasDefault returns true for non-zero default
+		if !opt.HasDefault() {
+			t.Error("HasDefault should return true after using WithDefault with non-zero value")
+		}
+
+		// Test that explicit value takes precedence over default
+		opt.WithValue("explicit_value")
+		val, err = opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if val != "explicit_value" {
+			t.Errorf("Expected explicit value 'explicit_value', got '%s'", val)
+		}
+
+		// Test setting default to zero value
+		var zero string
+		zeroOpt := base.NewConfigOption("original_default").WithDefault(zero)
+
+		// HasDefault should return false for zero value
+		if zeroOpt.HasDefault() {
+			t.Error("HasDefault should return false after setting default to zero value")
+		}
+	})
+}
+
+func TestConfigOptionGetValueOrFallback(t *testing.T) {
+	t.Run("WithValue", func(t *testing.T) {
+		// Test with string
+		optStr := base.NewConfigOption("").WithValue("actual value")
+		if val := optStr.GetValueOrFallback("fallback value"); val != "actual value" {
+			t.Errorf("Expected actual value, got %v", val)
+		}
+
+		// Test with int
+		optInt := base.NewConfigOption(0).WithValue(42)
+		if val := optInt.GetValueOrFallback(100); val != 42 {
+			t.Errorf("Expected 42, got %d", val)
+		}
+
+		// Test with bool
+		optBool := base.NewConfigOption(false).WithValue(true)
+		if val := optBool.GetValueOrFallback(false); val != true {
+			t.Errorf("Expected true, got %v", val)
+		}
+
+		// Test with float
+		optFloat := base.NewConfigOption(0.0).WithValue(3.14)
+		if val := optFloat.GetValueOrFallback(2.5); val != 3.14 {
+			t.Errorf("Expected 3.14, got %f", val)
+		}
+
+		// Test with slice
+		optSlice := base.NewConfigOption([]string{}).WithValue([]string{"a", "b", "c"})
+		fallbackSlice := []string{"x", "y", "z"}
+		val := optSlice.GetValueOrFallback(fallbackSlice)
+		if len(val) != 3 || val[0] != "a" || val[1] != "b" || val[2] != "c" {
+			t.Errorf("Expected [a b c], got %v", val)
+		}
+
+		// Test with map
+		optMap := base.NewConfigOption(map[string]int{}).WithValue(map[string]int{"a": 1, "b": 2})
+		fallbackMap := map[string]int{"fallback": 99}
+		mapVal := optMap.GetValueOrFallback(fallbackMap)
+		if len(mapVal) != 2 || mapVal["a"] != 1 || mapVal["b"] != 2 {
+			t.Errorf("Expected {a:1, b:2}, got %v", mapVal)
+		}
+
+		// Test with struct
+		type testStruct struct {
+			Name string
+			Age  int
+		}
+		actualStruct := testStruct{Name: "Actual", Age: 30}
+		fallbackStruct := testStruct{Name: "Fallback", Age: 20}
+		optStruct := base.NewConfigOption(testStruct{}).WithValue(actualStruct)
+		structVal := optStruct.GetValueOrFallback(fallbackStruct)
+		if structVal.Name != "Actual" || structVal.Age != 30 {
+			t.Errorf("Expected {Actual 30}, got %+v", structVal)
+		}
+	})
+
+	t.Run("WithGetter", func(t *testing.T) {
+		// Test with getter function
+		dynamicValue := "initial"
+		opt := base.NewConfigOption("").WithGetter(func() string {
+			return dynamicValue
+		})
+
+		// First call should return initial value
+		if val := opt.GetValueOrFallback("fallback"); val != "initial" {
+			t.Errorf("Expected initial, got %s", val)
+		}
+
+		// Change value and check again
+		dynamicValue = "updated"
+		if val := opt.GetValueOrFallback("fallback"); val != "updated" {
+			t.Errorf("Expected updated, got %s", val)
+		}
+	})
+
+	t.Run("WithSecret", func(t *testing.T) {
+		// Secret values should return the fallback
+		opt := base.NewConfigOption("secret-value").SetSecret(true)
+		if val := opt.GetValueOrFallback("fallback-value"); val != "fallback-value" {
+			t.Errorf("Expected fallback-value for secret config, got %s", val)
+		}
+	})
+
+	t.Run("WithNonExistentValue", func(t *testing.T) {
+		// Fallback should be returned when there's no other value source
+		// Create an option with an intentionally missing configuration
+		var testVal string
+		opt := base.NewConfigOption(testVal)
+
+		// When calling GetValueOrFallback, we get the empty string (default value), not the fallback parameter
+		// since empty string is now treated as a valid value
+		if val := opt.GetValueOrFallback("fallback-val"); val != "" {
+			t.Errorf("Expected empty string, got '%s'", val)
+		}
+	})
+
+	t.Run("WithZeroValues", func(t *testing.T) {
+		// Test zero values vs fallback values - all zero values should be returned as-is
+		// String - empty string should be returned as-is, not replaced with fallback
+		optStr := base.NewConfigOption("").WithValue("")
+		if val := optStr.GetValueOrFallback("fallback"); val != "" {
+			t.Errorf("Expected empty string, got '%s'", val)
+		}
+
+		// Int
+		optInt := base.NewConfigOption(0).WithValue(0)
+		if val := optInt.GetValueOrFallback(100); val != 0 {
+			t.Errorf("Expected 0, got %d", val)
+		}
+
+		// Bool
+		optBool := base.NewConfigOption(false).WithValue(false)
+		if val := optBool.GetValueOrFallback(true); val != false {
+			t.Errorf("Expected false, got %v", val)
+		}
+
+		// Float
+		optFloat := base.NewConfigOption(0.0).WithValue(0.0)
+		if val := optFloat.GetValueOrFallback(2.5); val != 0.0 {
+			t.Errorf("Expected 0.0, got %f", val)
+		}
+	})
+
+	t.Run("WithEnvVar", func(t *testing.T) {
+		// Set an environment variable
+		key := "TEST_ENV_VAR_FOR_GET_VALUE_OR_FALLBACK"
+		t.Setenv(key, "env-value")
+
+		// Create option with env var
+		opt := base.NewConfigOption("").WithEnvVar(key)
+
+		// Should get the value from environment
+		if val := opt.GetValueOrFallback("fallback"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
+
+		// Now with a non-existent env var
+		nonExistentKey := "NON_EXISTENT_ENV_VAR_FOR_TEST"
+		opt = base.NewConfigOption("").WithEnvVar(nonExistentKey)
+
+		// Since env var doesn't exist, it should return the empty string (default value),
+		// not the fallback value - empty strings are now treated as valid values
+		if val := opt.GetValueOrFallback("fallback-val"); val != "" {
+			t.Errorf("Expected empty string for non-existent env var, got '%s'", val)
+		}
+	})
+
+	t.Run("PriorityOrder", func(t *testing.T) {
+		// Test the priority order
+		key := "PRIORITY_TEST_ENV_VAR"
+		t.Setenv(key, "env-value")
+
+		// Create option with all possible values
+		opt := base.NewConfigOption("default-value").
+			WithValue("immediate-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
+
+		// Immediate value should have highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "immediate-value" {
+			t.Errorf("Expected immediate-value, got '%s'", val)
+		}
+
+		// Create option without immediate value
+		opt = base.NewConfigOption("default-value").
+			WithGetter(func() string { return "getter-value" }).
+			WithEnvVar(key)
+
+		// Getter should have second highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "getter-value" {
+			t.Errorf("Expected getter-value, got '%s'", val)
+		}
+
+		// Create option without getter
+		opt = base.NewConfigOption("default-value").
+			WithEnvVar(key)
+
+		// Env var should have third highest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "env-value" {
+			t.Errorf("Expected env-value, got '%s'", val)
+		}
+
+		// Create option with only default value
+		opt = base.NewConfigOption("default-value")
+
+		// Default should have lowest priority
+		if val := opt.GetValueOrFallback("fallback-param"); val != "default-value" {
+			t.Errorf("Expected default-value, got '%s'", val)
+		}
+
+		// Test with explicitly empty default value
+		var emptyString string // Using explicit variable for clarity
+		opt = base.NewConfigOption(emptyString)
+
+		// When default is empty string, it should return the empty string, not the fallback parameter
+		if val := opt.GetValueOrFallback("fallback-param"); val != "" {
+			t.Errorf("Expected empty string, got '%s'", val)
+		}
+	})
 }

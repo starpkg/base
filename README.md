@@ -75,6 +75,10 @@ option := base.NewConfigOption("default-value").     // Priority 4 (lowest)
     WithEnvVar("CONFIG_VAR").                        // Priority 3
     WithGetter(func() string { return "dynamic" }).  // Priority 2
     WithValue("explicit-value")                      // Priority 1 (highest)
+
+// You can also update the default value after creation:
+option := base.NewConfigOption("original-default").
+    WithDefault("new-default-value")  // Replace the default value
 ```
 
 ### Secret Configuration
@@ -125,6 +129,7 @@ module := base.NewConfigurableModule()
 // Using functional options
 module, err := base.NewConfigurableModuleWithOptions(
     base.WithConfigValue("timeout", 30),
+    base.WithConfigDefault("retry_count", 3),
     base.WithConfigOption("api_key", apiKeyOption),
     base.WithTypedConfigOption("rate_limit", rateOption),
 )
@@ -139,6 +144,10 @@ Create and configure typed options with builder pattern:
 apiKeyOption := base.NewConfigOption("").
     WithName("api_key").
     WithDescription("API key for service authentication").
+    WithValue("initial-key").         // Highest priority
+    WithGetter(fetchKeyFromVault).    // Second priority
+    WithEnvVar("API_KEY").            // Third priority
+    WithDefault("dev-key").           // Lowest priority
     WithValidator(func(val string) error {
         if len(val) < 10 {
             return errors.New("API key too short")
@@ -274,6 +283,7 @@ func main() {
 - `WithDescription(desc string) *ConfigOption[T]`
 - `WithEnvVar(envVar string) *ConfigOption[T]`
 - `WithValue(value T) *ConfigOption[T]`
+- `WithDefault(defaultValue T) *ConfigOption[T]`
 - `WithValidator(validator ConfigValidator[T]) *ConfigOption[T]`
 - `WithGetter(getter ConfigGetter[T]) *ConfigOption[T]`
 - `SetRequired(required bool) *ConfigOption[T]`
@@ -284,6 +294,7 @@ func main() {
 - `WithConfigOption(name string, option ConfigOptionInterface) ModuleOption`
 - `WithTypedConfigOption[T any](name string, option *ConfigOption[T]) ModuleOption`
 - `WithConfigValue[T any](name string, value T) ModuleOption`
+- `WithConfigDefault[T any](name string, defaultValue T) ModuleOption`
 - `WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption`
 - `WithConfigEnvVar[T any](name string, envVar string) ModuleOption`
 

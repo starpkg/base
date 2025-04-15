@@ -22,6 +22,12 @@ type ConfigValidator[T any] func(value T) error
 // ConfigOption represents a configuration option with a specific type.
 // It supports default values, validation, dynamic getters, and environment variable overrides.
 // The internal mutex protects all mutable fields.
+//
+// Configuration values are resolved in the following priority order (from highest to lowest):
+// 1. Immediate value (set via WithValue/SetValue)
+// 2. Returned value from the getter function (set via WithGetter)
+// 3. Environment variable value (set via WithEnvVar)
+// 4. Default value (set via WithDefault or NewConfigOption)
 type ConfigOption[T any] struct {
 	// Configuration metadata
 	Name        string // Unique identifier for this configuration.
@@ -66,18 +72,11 @@ func (o *ConfigOption[T]) WithDescription(desc string) *ConfigOption[T] {
 	return o
 }
 
-// WithEnvVar specifies an environment variable name to check for this configuration.
-func (o *ConfigOption[T]) WithEnvVar(envVar string) *ConfigOption[T] {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.EnvVar = envVar
-	return o
-}
-
 // WithValue sets the value of the configuration option.
 // This is useful for chain calls when building a configuration option.
 // Unlike SetValue, this method ignores any validators since it's part of a builder chain.
 // Validation will occur during module initialization when Initialize() is called.
+// This has the highest priority in the resolution order.
 func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -87,10 +86,29 @@ func (o *ConfigOption[T]) WithValue(value T) *ConfigOption[T] {
 }
 
 // WithGetter adds a custom getter to the configuration option.
+// This has the second highest priority in the resolution order.
 func (o *ConfigOption[T]) WithGetter(getter ConfigGetter[T]) *ConfigOption[T] {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.getter = getter
+	return o
+}
+
+// WithEnvVar specifies an environment variable name to check for this configuration.
+// This has the third highest priority in the resolution order.
+func (o *ConfigOption[T]) WithEnvVar(envVar string) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.EnvVar = envVar
+	return o
+}
+
+// WithDefault sets the default value of the configuration option.
+// This has the lowest priority in the resolution order.
+func (o *ConfigOption[T]) WithDefault(defaultValue T) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.defaultVal = defaultValue
 	return o
 }
 
@@ -134,6 +152,11 @@ func (o *ConfigOption[T]) getValueNoLock() (T, error) {
 
 // GetValue returns the current value of the configuration option.
 // For secret options, it returns an error.
+// The value is resolved according to the following priority order (from highest to lowest):
+// 1. Immediate value (set via WithValue/SetValue)
+// 2. Returned value from the getter function (set via WithGetter)
+// 3. Environment variable value (set via WithEnvVar)
+// 4. Default value (set via WithDefault or NewConfigOption)
 func (o *ConfigOption[T]) GetValue() (T, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -399,12 +422,13 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 //////////////////////////////////////////////////////////////////////////
 
 // resolveValue returns the current value based on the priority order:
-// 1. Immediate value
-// 2. Returned value from the getter function
-// 3. Environment variable value
-// 4. Default value
+// PRIORITY ORDER (from highest to lowest):
+// 1. Immediate value (set via WithValue/SetValue)
+// 2. Returned value from the getter function (set via WithGetter)
+// 3. Environment variable value (set via WithEnvVar)
+// 4. Default value (set via WithDefault or NewConfigOption)
 func (o *ConfigOption[T]) resolveValue() T {
-	// Priority 1: Immediate value takes precedence
+	// Priority 1 (Highest): Immediate value takes precedence
 	if o.hasValue {
 		return o.value
 	}
@@ -423,7 +447,7 @@ func (o *ConfigOption[T]) resolveValue() T {
 		}
 	}
 
-	// Priority 4: Default value is used as a fallback
+	// Priority 4 (Lowest): Default value is used as a fallback
 	return o.defaultVal
 }
 
@@ -488,4 +512,27 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 	}
 
 	return zero, false
+}
+
+// GetValueOrFallback returns the current value of the configuration option or the provided fallback value if retrieval fails.
+// This is a convenience method to avoid having to handle errors when getting config values.
+//
+// Example:
+//
+//	// Instead of:
+//	val, err := option.GetValue()
+//	if err != nil {
+//	    val = fallbackVal
+//	}
+//
+//	// You can use:
+//	val := option.GetValueOrFallback(fallbackVal)
+//
+// This is especially useful for secret values that would otherwise cause errors when retrieved directly.
+func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) T {
+	val, err := o.GetValue()
+	if err != nil {
+		return fallbackVal
+	}
+	return val
 }
