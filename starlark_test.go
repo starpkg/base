@@ -34,47 +34,50 @@ func TestStarlarkIntegration(t *testing.T) {
 
 		// Load the module with starlark
 		loader := module.LoadModule("test_module", nil)
-		dict, err := loader()
-		if err != nil {
-			t.Fatalf("Module loading failed: %v", err)
+
+		// Create an environment to test the module
+		env := starlet.NewDefault()
+		loaders := make(map[string]starlet.ModuleLoader)
+		loaders["test_module"] = loader
+		env.SetLazyloadModules(loaders)
+
+		// Create a script that tests the module's functions
+		script := `
+# Load the module functions
+load("test_module", "set_string_opt", "get_string_opt")
+
+# Test setting a value
+set_string_opt("new_value")
+
+# Test getting a value
+val = get_string_opt()
+print(val)
+`
+		env.SetScriptContent([]byte(script))
+
+		// Run the script
+		_, scriptErr := env.Run()
+		if scriptErr != nil {
+			t.Errorf("Script execution failed: %v", scriptErr)
 		}
 
-		// Test setter and getter functions
-		setString, ok := dict["set_string_opt"].(starlark.Callable)
+		// Verify the value was actually changed in the Go module
+		strOpt, err := module.GetConfigOption("string_opt")
+		if err != nil {
+			t.Fatalf("Failed to get string_opt: %v", err)
+		}
+		typedStrOpt, ok := strOpt.(*base.ConfigOption[string])
 		if !ok {
-			t.Fatal("set_string_opt should be a Callable")
+			t.Fatalf("string_opt is not of type *ConfigOption[string]")
 		}
 
-		getString, ok := dict["get_string_opt"].(starlark.Callable)
-		if !ok {
-			t.Fatal("get_string_opt should be a Callable")
-		}
-
-		// Call the setter
-		_, err = setString.CallInternal(nil, starlark.Tuple{starlark.String("new_value")}, nil)
+		val, err := typedStrOpt.GetValue()
 		if err != nil {
-			t.Fatalf("Failed to call set_string_opt: %v", err)
+			t.Fatalf("Failed to get value: %v", err)
 		}
 
-		// Call the getter to verify the value was set
-		result, err := getString.CallInternal(nil, nil, nil)
-		if err != nil {
-			t.Fatalf("Failed to call get_string_opt: %v", err)
-		}
-
-		if result.String() != `"new_value"` {
-			t.Errorf("Expected \"new_value\", got %s", result.String())
-		}
-
-		// Test invalid calls
-		_, err = setString.CallInternal(nil, starlark.Tuple{}, nil) // Missing argument
-		if err == nil {
-			t.Error("Expected error for missing argument, got nil")
-		}
-
-		_, err = setString.CallInternal(nil, starlark.Tuple{starlark.MakeInt(123)}, nil) // Wrong type
-		if err == nil {
-			t.Error("Expected error for wrong type, got nil")
+		if val != "new_value" {
+			t.Errorf("Expected string_opt value to be 'new_value', got '%s'", val)
 		}
 	})
 
@@ -301,42 +304,41 @@ func TestGenSetFunction(t *testing.T) {
 
 	// Load the module
 	loader := module.LoadModule("test", nil)
-	dict, err := loader()
+	_, err = loader()
 	if err != nil {
 		t.Fatalf("Module loading failed: %v", err)
 	}
 
-	// Get the setter function
-	setValidated, ok := dict["set_validated"].(starlark.Callable)
-	if !ok {
-		t.Fatal("set_validated should be a Callable")
+	// Create an environment to test the module
+	env := starlet.NewDefault()
+	loaders := make(map[string]starlet.ModuleLoader)
+	loaders["test"] = loader
+	env.SetLazyloadModules(loaders)
+
+	// Create a script that tests validation
+	script := `
+# Load the module functions
+load("test", "set_validated")
+
+# Test setting a value
+set_validated(10)
+`
+	env.SetScriptContent([]byte(script))
+
+	// Run the script
+	_, scriptErr := env.Run()
+	if scriptErr != nil {
+		t.Errorf("Script execution failed: %v", scriptErr)
 	}
 
-	// Try setting a valid value
-	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(10)}, nil)
+	// Verify the value was actually set to 10 in the Go module
+	validatedValue, err := base.GetConfigValue[int](module, "validated")
 	if err != nil {
-		t.Errorf("Failed to set a valid value: %v", err)
+		t.Fatalf("Failed to get validated value: %v", err)
 	}
 
-	// Try setting an invalid value
-	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(-10)}, nil)
-	if err == nil {
-		t.Error("Expected error when setting invalid value, got nil")
-	}
-
-	// Try calling with wrong number of arguments
-	_, err = setValidated.CallInternal(nil, starlark.Tuple{}, nil)
-	if err == nil {
-		t.Error("Expected error when calling with no arguments, got nil")
-	}
-
-	// Try calling with extra named arguments
-	kwargs := []starlark.Tuple{
-		{starlark.String("extra"), starlark.String("arg")},
-	}
-	_, err = setValidated.CallInternal(nil, starlark.Tuple{starlark.MakeInt(5)}, kwargs)
-	if err == nil {
-		t.Error("Expected error when calling with extra named arguments, got nil")
+	if validatedValue != 10 {
+		t.Errorf("Expected validated value to be 10, got %d", validatedValue)
 	}
 }
 

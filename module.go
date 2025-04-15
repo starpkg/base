@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/1set/starlet"
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 )
 
@@ -180,19 +181,26 @@ func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starl
 	if err := m.Initialize(); err != nil {
 		panic(err)
 	}
-	return func() (starlark.StringDict, error) {
-		sd := starlark.StringDict{}
-		for name, option := range m.configs {
-			sd["set_"+name] = m.generateSetBuiltin(name, option)
-			if !option.IsSecret() {
-				sd["get_"+name] = m.generateGetBuiltin(name, option)
-			}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Add config setters and getters
+	sd := make(starlark.StringDict, len(m.configs)*2+len(additionalFuncs))
+	for name, option := range m.configs {
+		sd["set_"+name] = m.generateSetBuiltin(name, option)
+		if !option.IsSecret() {
+			sd["get_"+name] = m.generateGetBuiltin(name, option)
 		}
-		for k, v := range additionalFuncs {
-			sd[k] = v
-		}
-		return sd, nil
 	}
+
+	// Add additional functions
+	for k, v := range additionalFuncs {
+		sd[k] = v
+	}
+
+	// Wrap as module data
+	return dataconv.WrapModuleData(moduleName, sd)
 }
 
 // generateSetBuiltin creates a Starlark builtin for setting a configuration option.
