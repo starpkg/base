@@ -286,13 +286,6 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 //
 // For even more convenience, use the ConfigurableModuleExt methods via the Extend() function.
 func GetConfigValueWithFallback[T any](m *ConfigurableModule, name string, fallbackVal T) T {
-	// Use defer/recover to handle potential panics
-	defer func() {
-		if r := recover(); r != nil {
-			// Just let the function return the fallback value
-		}
-	}()
-
 	// Get the config option
 	option, err := m.GetConfigOption(name)
 	if err != nil {

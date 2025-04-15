@@ -388,15 +388,13 @@ func TestConfigOption(t *testing.T) {
 					panic("getter panic")
 				})
 
-			// Call GetInfo and ensure it doesn't deadlock
-			func() {
-				defer func() {
-					if r := recover(); r == nil {
-						t.Error("Expected panic from getter")
-					}
-				}()
-				opt.GetInfo()
-			}()
+			// Call GetInfo and ensure it handles the panic gracefully
+			info := opt.GetInfo()
+
+			// Verify the info map doesn't contain the value since getter panicked
+			if _, hasValue := info["value"]; hasValue {
+				t.Error("GetInfo should not include 'value' when getter panics")
+			}
 		})
 
 		// Test with concurrent access

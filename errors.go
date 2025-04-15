@@ -22,4 +22,6 @@ var (
 	ErrModuleNotInitialized = errors.New("module not initialized")
 	// ErrConfigOptionNotFound is the error when a configuration option is not found.
 	ErrConfigOptionNotFound = errors.New("config option not found")
+	// ErrConfigGetterPanic is the error when a config getter function panics.
+	ErrConfigGetterPanic = errors.New("config getter panicked")
 )

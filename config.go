@@ -143,12 +143,6 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 // Accessors and Mutators
 //////////////////////////////////////////////////////////////////////////
 
-// getValueNoLock is an internal helper that returns the value without locking.
-// It directly uses resolveValue since they serve the same purpose.
-func (o *ConfigOption[T]) getValueNoLock() (T, error) {
-	return o.resolveValue(), nil
-}
-
 // GetValue returns the current value of the configuration option.
 // The value is resolved according to the following priority order (from highest to lowest):
 // 1. Immediate value (set via WithValue/SetValue)
@@ -160,7 +154,7 @@ func (o *ConfigOption[T]) getValueNoLock() (T, error) {
 func (o *ConfigOption[T]) GetValue() (T, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.getValueNoLock()
+	return o.resolveValue()
 }
 
 // SetValue sets the value of the configuration option.
@@ -277,8 +271,7 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 	// Only include values for non-secret configs in the info map
 	// This protects secrets from being accidentally logged or displayed
 	if !o.isSecret {
-		val, err := o.getValueNoLock()
-		if err == nil {
+		if val, err := o.resolveValue(); err == nil {
 			info["value"] = val
 		}
 	}
@@ -416,11 +409,10 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	value, err := o.getValueNoLock()
+	value, err := o.resolveValue()
 	if err != nil {
 		return nil, err
 	}
-
 	return dataconv.Marshal(value)
 }
 
@@ -434,28 +426,41 @@ func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
 // 2. Returned value from the getter function (set via WithGetter)
 // 3. Environment variable value (set via WithEnvVar)
 // 4. Default value (set via WithDefault or NewConfigOption)
-func (o *ConfigOption[T]) resolveValue() T {
+//
+// This function may return an error if:
+// - The getter function panics
+// - Reflection operations fail
+func (o *ConfigOption[T]) resolveValue() (value T, err error) {
+	// Use defer/recover to handle panics
+	defer func() {
+		if r := recover(); r != nil {
+			var zero T
+			value = zero
+			err = fmt.Errorf("%w: %v", ErrConfigGetterPanic, r)
+		}
+	}()
+
 	// Priority 1 (Highest): Immediate value takes precedence
 	if o.hasValue {
-		return o.value
+		return o.value, nil
 	}
 
 	// Priority 2: Getter provides dynamic values and takes precedence over environment variables
 	if o.getter != nil {
-		return o.getter()
+		return o.getter(), nil
 	}
 
 	// Priority 3: Environment variable takes precedence over default value
 	if o.EnvVar != "" {
 		if envValue, exists := os.LookupEnv(o.EnvVar); exists {
 			if converted, ok := o.convertEnvValue(envValue); ok {
-				return converted
+				return converted, nil
 			}
 		}
 	}
 
 	// Priority 4 (Lowest): Default value is used as a fallback
-	return o.defaultVal
+	return o.defaultVal, nil
 }
 
 // convertEnvValue attempts to convert an environment variable string value
@@ -534,15 +539,7 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 //
 //	// You can use:
 //	val := option.GetValueOrFallback(fallbackVal)
-func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) (result T) {
-	// Use defer/recover to handle panics from the getter
-	defer func() {
-		if r := recover(); r != nil {
-			// When a panic occurs, set the result to the fallback value
-			result = fallbackVal
-		}
-	}()
-
+func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) T {
 	val, err := o.GetValue()
 	if err != nil {
 		return fallbackVal
