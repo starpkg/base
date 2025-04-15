@@ -73,29 +73,36 @@ func TestConfigurableModuleExt(t *testing.T) {
 }
 
 func TestConfigurableModuleExtErrors(t *testing.T) {
+	// Test error cases for extension methods
+	// Test with non-existent config
 	module := NewConfigurableModule()
-
-	// Set a string config and try to retrieve it as an int
-	module.SetConfigOption("string_config", NewConfigOption("test"))
 	module.Initialize()
 
 	ext := module.Extend()
 
-	// This should return the default value because of type mismatch
-	if v := ext.GetInt("string_config", 999); v != 999 {
-		t.Errorf("Expected GetInt on string config to return default 999, got %d", v)
+	// Test with non-existent configs
+	if v := ext.GetString("non_existent", "default_str"); v != "default_str" {
+		t.Errorf("Expected GetString for non-existent config to return default, got %s", v)
 	}
 
-	// Test with secret config
+	if v := ext.GetInt("non_existent", 42); v != 42 {
+		t.Errorf("Expected GetInt for non-existent config to return default, got %d", v)
+	}
+
+	if v := ext.GetUint("non_existent", 42); v != 42 {
+		t.Errorf("Expected GetUint for non-existent config to return default, got %d", v)
+	}
+
+	// Test with secret config (secret values should now be accessible)
 	secretModule := NewConfigurableModule()
 	secretModule.SetConfigOption("api_key", NewConfigOption("secret_key").SetSecret(true))
 	secretModule.Initialize()
 
 	secretExt := secretModule.Extend()
 
-	// This should return the default value because it's secret
-	if v := secretExt.GetString("api_key", "default_key"); v != "default_key" {
-		t.Errorf("Expected GetString on secret config to return default, got %s", v)
+	// Since we changed the behavior, secret values should now be retrievable
+	if v := secretExt.GetString("api_key", "default_key"); v != "secret_key" {
+		t.Errorf("Expected GetString on secret config to return the secret value 'secret_key', got '%s'", v)
 	}
 }
 

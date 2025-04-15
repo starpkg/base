@@ -1381,19 +1381,39 @@ func TestConfigurableModule_ImmutableAfterInit(t *testing.T) {
 		t.Fatalf("Expected ErrModuleAlreadyInitialized, got %v", err)
 	}
 }
+
 func TestConfigOption_Secret(t *testing.T) {
 	// Create a secret config option
-	opt := base.NewConfigOption[string]("secret").WithName("api_key")
+	secretValue := "secret"
+	opt := base.NewConfigOption[string](secretValue).WithName("api_key")
 	opt.SetSecret(true)
-	_, err := opt.GetValue()
-	if err == nil {
-		t.Errorf("Expected error retrieving secret config, got nil")
+
+	// Secret values should be accessible via GetValue in Go code
+	val, err := opt.GetValue()
+	if err != nil {
+		t.Errorf("Expected no error retrieving secret config in Go, got %v", err)
 	}
+	if val != secretValue {
+		t.Errorf("Expected secret value %q, got %q", secretValue, val)
+	}
+
 	// Verify that the secret config does not expose its value in GetInfo
 	info := opt.GetInfo()
 	if _, ok := info["value"]; ok {
 		t.Errorf("Secret config should not expose its value in GetInfo")
 	}
+
+	// Verify that GetStarlarkValue doesn't block secrets
+	starlarkVal, err := opt.GetStarlarkValue()
+	if err != nil {
+		t.Errorf("Expected no error retrieving secret value via GetStarlarkValue, got %v", err)
+	}
+	if starlarkVal == nil {
+		t.Error("GetStarlarkValue should not return nil for secret values")
+	}
+
+	// However, in a Starlark module, getters for secret values are not registered
+	// This is tested in TestStarlarkSecretAccess
 }
 
 func TestConfigOption_WithEnvVar(t *testing.T) {

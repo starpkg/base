@@ -28,6 +28,9 @@ type ConfigValidator[T any] func(value T) error
 // 2. Returned value from the getter function (set via WithGetter)
 // 3. Environment variable value (set via WithEnvVar)
 // 4. Default value (set via WithDefault or NewConfigOption)
+//
+// Secret configuration values are accessible in Go code but will not be exposed
+// to Starlark runtime or in the GetInfo() results to protect sensitive data.
 type ConfigOption[T any] struct {
 	// Configuration metadata
 	Name        string // Unique identifier for this configuration.
@@ -141,22 +144,19 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 //////////////////////////////////////////////////////////////////////////
 
 // getValueNoLock is an internal helper that returns the value without locking.
+// It directly uses resolveValue since they serve the same purpose.
 func (o *ConfigOption[T]) getValueNoLock() (T, error) {
-	if o.isSecret {
-		var zero T
-		return zero, ErrSecretConfigNotRetrievable
-	}
-
 	return o.resolveValue(), nil
 }
 
 // GetValue returns the current value of the configuration option.
-// For secret options, it returns an error.
 // The value is resolved according to the following priority order (from highest to lowest):
 // 1. Immediate value (set via WithValue/SetValue)
 // 2. Returned value from the getter function (set via WithGetter)
 // 3. Environment variable value (set via WithEnvVar)
 // 4. Default value (set via WithDefault or NewConfigOption)
+//
+// Secret values can be accessed via this method in Go code.
 func (o *ConfigOption[T]) GetValue() (T, error) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -274,7 +274,8 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 		"has_env_var": o.EnvVar != "",
 	}
 
-	// Only include values for non-secret configs
+	// Only include values for non-secret configs in the info map
+	// This protects secrets from being accidentally logged or displayed
 	if !o.isSecret {
 		val, err := o.getValueNoLock()
 		if err == nil {
@@ -408,8 +409,14 @@ func isNumericType(t reflect.Type) bool {
 }
 
 // GetStarlarkValue returns the configuration value as a starlark value.
+// This method provides the underlying mechanism to access configuration values in Starlark scripts.
+// Note that while this method itself doesn't block secret values, secret configuration options
+// are not exposed as get_* methods in Starlark runtime by the LoadModule method.
 func (o *ConfigOption[T]) GetStarlarkValue() (starlark.Value, error) {
-	value, err := o.GetValue()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	value, err := o.getValueNoLock()
 	if err != nil {
 		return nil, err
 	}
@@ -527,9 +534,15 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 //
 //	// You can use:
 //	val := option.GetValueOrFallback(fallbackVal)
-//
-// This is especially useful for secret values that would otherwise cause errors when retrieved directly.
-func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) T {
+func (o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) (result T) {
+	// Use defer/recover to handle panics from the getter
+	defer func() {
+		if r := recover(); r != nil {
+			// When a panic occurs, set the result to the fallback value
+			result = fallbackVal
+		}
+	}()
+
 	val, err := o.GetValue()
 	if err != nil {
 		return fallbackVal
