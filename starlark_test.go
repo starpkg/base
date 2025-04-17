@@ -591,3 +591,147 @@ print("Module loaded and functions accessible")
 		t.Errorf("Expected updated secret value to be 'new-secret-key-678910', got '%s'", newVal)
 	}
 }
+
+func TestGetStarlarkValue(t *testing.T) {
+	t.Run("BasicTypes", func(t *testing.T) {
+		// String
+		strOpt := base.NewConfigOption("test string")
+		strVal, err := strOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for string failed: %v", err)
+		}
+		if strVal.String() != `"test string"` {
+			t.Errorf("Expected starlark string \"test string\", got %s", strVal.String())
+		}
+
+		// Integer
+		intOpt := base.NewConfigOption(42)
+		intVal, err := intOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for int failed: %v", err)
+		}
+		if intVal.String() != "42" {
+			t.Errorf("Expected starlark int 42, got %s", intVal.String())
+		}
+
+		// Boolean
+		boolOpt := base.NewConfigOption(true)
+		boolVal, err := boolOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for bool failed: %v", err)
+		}
+		if boolVal.String() != "True" {
+			t.Errorf("Expected starlark bool True, got %s", boolVal.String())
+		}
+
+		// Float
+		floatOpt := base.NewConfigOption(3.14)
+		floatVal, err := floatOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for float failed: %v", err)
+		}
+		if floatVal.String() != "3.14" {
+			t.Errorf("Expected starlark float 3.14, got %s", floatVal.String())
+		}
+	})
+
+	t.Run("ComplexTypes", func(t *testing.T) {
+		// Slice
+		sliceOpt := base.NewConfigOption([]string{"a", "b", "c"})
+		sliceVal, err := sliceOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for slice failed: %v", err)
+		}
+		if sliceVal.String() != `["a", "b", "c"]` {
+			t.Errorf("Expected starlark list [\"a\", \"b\", \"c\"], got %s", sliceVal.String())
+		}
+
+		// Map - use map[string]interface{} which is known to be convertible
+		mapOpt := base.NewConfigOption(map[string]interface{}{"a": 1, "b": "two"})
+		mapVal, err := mapOpt.GetStarlarkValue()
+		if err != nil {
+			t.Fatalf("GetStarlarkValue for map failed: %v", err)
+		}
+		if !strings.Contains(mapVal.String(), `"a": 1`) || !strings.Contains(mapVal.String(), `"b": "two"`) {
+			t.Errorf("Expected starlark dict with \"a\": 1, \"b\": \"two\", got %s", mapVal.String())
+		}
+	})
+
+	t.Run("ErrorCases", func(t *testing.T) {
+		// Function type (not convertible to Starlark)
+		funcOpt := base.NewConfigOption(func() {})
+		_, err := funcOpt.GetStarlarkValue()
+		if err == nil {
+			t.Fatal("Expected error for unconvertible type, got nil")
+		}
+
+		// Complex number (not directly convertible)
+		complexOpt := base.NewConfigOption(complex(1, 2))
+		_, err = complexOpt.GetStarlarkValue()
+		if err == nil {
+			t.Fatal("Expected error for complex number, got nil")
+		}
+
+		// Unresolvable value (error from getter)
+		errorOpt := base.NewConfigOption("").WithGetter(func() string {
+			panic("artificial panic in getter")
+		})
+		_, err = errorOpt.GetStarlarkValue()
+		if err == nil {
+			t.Fatal("Expected error from panic in getter, got nil")
+		}
+	})
+}
+
+func TestSetValueFromStarlarkEdgeCases(t *testing.T) {
+	t.Run("SliceConversionEdgeCases", func(t *testing.T) {
+		// Test boolean slice
+		opt := base.NewConfigOption([]bool{})
+		list := starlark.NewList([]starlark.Value{
+			starlark.Bool(true),
+			starlark.Bool(false),
+			starlark.Bool(true),
+		})
+
+		err := opt.SetValueFromStarlark(list)
+		if err != nil {
+			t.Fatalf("Failed to convert to bool slice: %v", err)
+		}
+
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(val) != 3 || !val[0] || val[1] || !val[2] {
+			t.Errorf("Expected [true, false, true], got %v", val)
+		}
+	})
+
+	t.Run("TypeConversionErrors", func(t *testing.T) {
+		// Test conversion failure with incompatible types
+		chanOpt := base.NewConfigOption(make(chan int))
+		err := chanOpt.SetValueFromStarlark(starlark.String("not a channel"))
+		if err == nil {
+			t.Fatal("Expected error for unsupported chan type, got nil")
+		}
+
+		// Test map conversion errors
+		mapOpt := base.NewConfigOption(map[int]string{})
+		dict := starlark.NewDict(2)
+		dict.SetKey(starlark.String("1"), starlark.String("one"))
+		dict.SetKey(starlark.String("2"), starlark.String("two"))
+
+		err = mapOpt.SetValueFromStarlark(dict)
+		if err == nil {
+			t.Fatal("Expected error for map key conversion, got nil")
+		}
+
+		// Test invalid number format for int conversion
+		intOpt := base.NewConfigOption(0)
+		err = intOpt.SetValueFromStarlark(starlark.String("not a number"))
+		if err == nil {
+			t.Fatal("Expected error for invalid number format, got nil")
+		}
+	})
+}
