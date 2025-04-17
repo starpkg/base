@@ -946,6 +946,45 @@ func TestConfigOptionGetValueOrFallback(t *testing.T) {
 		// The GetValueOrFallback recovery functionality is tested elsewhere
 	})
 
+	t.Run("WithPanicGetter", func(t *testing.T) {
+		// Create option with a getter that panics
+		opt := base.NewConfigOption("").WithGetter(func() string {
+			panic("intentional panic for testing")
+		})
+
+		// When the getter panics, it should return the fallback value
+		fallbackValue := "fallback-for-panic"
+		if val := opt.GetValueOrFallback(fallbackValue); val != fallbackValue {
+			t.Errorf("Expected fallback value '%s' when getter panics, got '%s'", fallbackValue, val)
+		}
+	})
+
+	t.Run("WithErrorGetter", func(t *testing.T) {
+		// Create a ConfigOption with a getter that will cause an error when GetValue is called
+		// This tests a different error path than the WithPanicGetter test
+		opt := base.NewConfigOption(0).WithGetter(func() int {
+			// Create a panic with a different message to ensure we're testing a different scenario
+			panic("simulated error in WithErrorGetter test")
+		})
+
+		// When GetValue fails due to this error, it should return the fallback value
+		fallbackValue := 42
+		if val := opt.GetValueOrFallback(fallbackValue); val != fallbackValue {
+			t.Errorf("Expected fallback value %d when GetValue fails, got %d", fallbackValue, val)
+		}
+	})
+
+	t.Run("ExplicitReturnValCoverage", func(t *testing.T) {
+		// This test case explicitly verifies the final return val path
+		expectedValue := "expected-value"
+		opt := base.NewConfigOption(expectedValue)
+
+		// Verify that the returned value matches what GetValue would return
+		if val := opt.GetValueOrFallback("fallback-value"); val != expectedValue {
+			t.Errorf("Expected value '%s', got '%s'", expectedValue, val)
+		}
+	})
+
 	t.Run("WithNonExistentValue", func(t *testing.T) {
 		// Fallback should be returned when there's no other value source
 		// Create an option with an intentionally missing configuration
