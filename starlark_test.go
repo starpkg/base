@@ -735,3 +735,201 @@ func TestSetValueFromStarlarkEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestMapKeyConversion specifically tests the map key conversion logic in SetValueFromStarlark
+func TestMapKeyConversion(t *testing.T) {
+	t.Run("ConvertibleMapKeys", func(t *testing.T) {
+		// Test conversion from int to int64
+		opt := base.NewConfigOption(map[int64]string{})
+
+		// Create a Starlark dict with int keys
+		dict := starlark.NewDict(3)
+		dict.SetKey(starlark.MakeInt(1), starlark.String("one"))
+		dict.SetKey(starlark.MakeInt(2), starlark.String("two"))
+		dict.SetKey(starlark.MakeInt(3), starlark.String("three"))
+
+		// Test conversion by setting value from Starlark
+		err := opt.SetValueFromStarlark(dict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for convertible map keys: %v", err)
+		}
+
+		// Get and verify the value
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		// Check that all keys were properly converted
+		if len(val) != 3 || val[1] != "one" || val[2] != "two" || val[3] != "three" {
+			t.Errorf("Expected map with 3 keys and correct values, got %v", val)
+		}
+	})
+
+	t.Run("NonConvertibleMapKeys", func(t *testing.T) {
+		// Test conversion from string to int (should fail)
+		opt := base.NewConfigOption(map[int]string{})
+
+		// Create a Starlark dict with string keys (not convertible to int)
+		dict := starlark.NewDict(2)
+		dict.SetKey(starlark.String("key1"), starlark.String("value1"))
+		dict.SetKey(starlark.String("key2"), starlark.String("value2"))
+
+		// Should fail with "map key cannot be converted" error
+		err := opt.SetValueFromStarlark(dict)
+		if err == nil {
+			t.Error("Expected error for non-convertible map keys, got nil")
+		}
+
+		// Verify error message contains the expected text
+		if !strings.Contains(err.Error(), "map key cannot be converted") {
+			t.Errorf("Expected error message to contain 'map key cannot be converted', got: %v", err)
+		}
+	})
+
+	t.Run("NumericKeyConversion", func(t *testing.T) {
+		// Test conversion between different numeric types
+		// float32 -> int
+		intMapOpt := base.NewConfigOption(map[int]string{})
+		floatDict := starlark.NewDict(2)
+		floatDict.SetKey(starlark.Float(1.0), starlark.String("one"))
+		floatDict.SetKey(starlark.Float(2.0), starlark.String("two"))
+
+		// Should convert the float to int successfully
+		err := intMapOpt.SetValueFromStarlark(floatDict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for numeric key conversion: %v", err)
+		}
+
+		intVal, err := intMapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(intVal) != 2 || intVal[1] != "one" || intVal[2] != "two" {
+			t.Errorf("Expected map with 2 keys and correct values, got %v", intVal)
+		}
+
+		// Conversion that should fail: float with fraction to int
+		floatFracDict := starlark.NewDict(1)
+		floatFracDict.SetKey(starlark.Float(1.5), starlark.String("one point five"))
+
+		// This should still succeed since floats can be converted to ints (truncated)
+		err = intMapOpt.SetValueFromStarlark(floatFracDict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for truncated float: %v", err)
+		}
+
+		// Key should be truncated to 1
+		intVal, err = intMapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(intVal) != 1 || intVal[1] != "one point five" {
+			t.Errorf("Expected map with truncated float key, got %v", intVal)
+		}
+	})
+
+	t.Run("ComplexMapKeyConversions", func(t *testing.T) {
+		// Test with custom key types (using uint8 as target)
+		uintMapOpt := base.NewConfigOption(map[uint8]string{})
+
+		// Try to convert from various numeric types
+		mixedDict := starlark.NewDict(3)
+		mixedDict.SetKey(starlark.MakeInt(42), starlark.String("from int"))
+		mixedDict.SetKey(starlark.Float(100.0), starlark.String("from float"))
+		mixedDict.SetKey(starlark.Float(255.0), starlark.String("max uint8"))
+
+		err := uintMapOpt.SetValueFromStarlark(mixedDict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed for mixed numeric conversions: %v", err)
+		}
+
+		uintVal, err := uintMapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		if len(uintVal) != 3 ||
+			uintVal[42] != "from int" ||
+			uintVal[100] != "from float" ||
+			uintVal[255] != "max uint8" {
+			t.Errorf("Expected map with converted keys, got %v", uintVal)
+		}
+
+		// Test overflow case (should error)
+		overflowDict := starlark.NewDict(1)
+		overflowDict.SetKey(starlark.MakeInt(256), starlark.String("overflow"))
+
+		// This will actually succeed on most systems as the int256 will fit in a uint8
+		// due to type conversion mechanics in Go, but will wrap around to 0
+		err = uintMapOpt.SetValueFromStarlark(overflowDict)
+		if err != nil {
+			t.Fatalf("SetValueFromStarlark failed unexpectedly: %v", err)
+		}
+
+		uintVal, err = uintMapOpt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+
+		// 256 should wrap around to 0 for uint8
+		if len(uintVal) != 1 || uintVal[0] != "overflow" {
+			t.Errorf("Expected map with wrapped key, got %v", uintVal)
+		}
+	})
+
+	t.Run("ExactErrorMessageFormat", func(t *testing.T) {
+		// Create config option with a map that requires a specific key type
+		type CustomKey struct {
+			ID int
+		}
+		opt := base.NewConfigOption(map[CustomKey]string{})
+
+		// Create a Starlark dict with string keys (not convertible to CustomKey)
+		dict := starlark.NewDict(1)
+		dict.SetKey(starlark.String("key1"), starlark.String("value1"))
+
+		// Attempt conversion which should fail
+		err := opt.SetValueFromStarlark(dict)
+
+		// Check error exists
+		if err == nil {
+			t.Fatal("Expected error for non-convertible map keys to custom struct, got nil")
+		}
+
+		// Check specific error message format
+		expectedPattern := "map key cannot be converted from"
+		if !strings.Contains(err.Error(), expectedPattern) {
+			t.Errorf("Expected error message to contain '%s', got: %v", expectedPattern, err)
+		}
+
+		// Ensure error message includes both source and target types
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "string") || !strings.Contains(errMsg, "CustomKey") {
+			t.Errorf("Error message should contain both source type (string) and target type (CustomKey). Got: %s", errMsg)
+		}
+
+		// Try another case: complex key type requirement with a simple numeric key
+		intKeyOpt := base.NewConfigOption(map[complex128]string{})
+		intDict := starlark.NewDict(1)
+		intDict.SetKey(starlark.MakeInt(42), starlark.String("value"))
+
+		err = intKeyOpt.SetValueFromStarlark(intDict)
+		if err == nil {
+			t.Fatal("Expected error for non-convertible map keys from int to complex, got nil")
+		}
+
+		// Check specific error pattern
+		if !strings.Contains(err.Error(), expectedPattern) {
+			t.Errorf("Expected error message to contain '%s', got: %v", expectedPattern, err)
+		}
+
+		// Check for both types in error message
+		errMsg = err.Error()
+		if !strings.Contains(errMsg, "int") || !strings.Contains(errMsg, "complex128") {
+			t.Errorf("Error message should contain both source type (int) and target type (complex128). Got: %s", errMsg)
+		}
+	})
+}
