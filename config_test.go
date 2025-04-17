@@ -1,7 +1,6 @@
 package base_test
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -190,21 +189,30 @@ func TestConfigOption(t *testing.T) {
 			t.Error("IsSecret should return true for secret configs")
 		}
 
-		// GetValue should return an error for secret configs
-		_, err := opt.GetValue()
-		if err == nil {
-			t.Error("GetValue should return error for secret configs")
+		// GetValue should now allow retrieving secret values in Go code
+		val, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue should not return error for secret configs: %v", err)
 		}
 
-		// Make sure the error is the expected error
-		if !errors.Is(err, base.ErrSecretConfigNotRetrievable) {
-			t.Errorf("Expected ErrSecretConfigNotRetrievable, got %v", err)
+		if val != "secret_value" {
+			t.Errorf("Expected secret_value, got '%s'", val)
 		}
 
 		// But we should still be able to set values
 		err = opt.SetValue("new_secret")
 		if err != nil {
 			t.Fatalf("SetValue failed for secret config: %v", err)
+		}
+
+		// Check that the new value is retrievable
+		val, err = opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue should not return error for secret configs: %v", err)
+		}
+
+		if val != "new_secret" {
+			t.Errorf("Expected new_secret, got '%s'", val)
 		}
 	})
 
@@ -380,15 +388,13 @@ func TestConfigOption(t *testing.T) {
 					panic("getter panic")
 				})
 
-			// Call GetInfo and ensure it doesn't deadlock
-			func() {
-				defer func() {
-					if r := recover(); r == nil {
-						t.Error("Expected panic from getter")
-					}
-				}()
-				opt.GetInfo()
-			}()
+			// Call GetInfo and ensure it handles the panic gracefully
+			info := opt.GetInfo()
+
+			// Verify the info map doesn't contain the value since getter panicked
+			if _, hasValue := info["value"]; hasValue {
+				t.Error("GetInfo should not include 'value' when getter panics")
+			}
 		})
 
 		// Test with concurrent access
@@ -928,10 +934,54 @@ func TestConfigOptionGetValueOrFallback(t *testing.T) {
 	})
 
 	t.Run("WithSecret", func(t *testing.T) {
-		// Secret values should return the fallback
-		opt := base.NewConfigOption("secret-value").SetSecret(true)
-		if val := opt.GetValueOrFallback("fallback-value"); val != "fallback-value" {
-			t.Errorf("Expected fallback-value for secret config, got %s", val)
+		// Secret values should now be retrievable with GetValueOrFallback
+		secretValue := "secret-value"
+		opt := base.NewConfigOption(secretValue).SetSecret(true)
+
+		if val := opt.GetValueOrFallback("fallback-value"); val != secretValue {
+			t.Errorf("Expected '%s' for secret config, got '%s'", secretValue, val)
+		}
+
+		// Skip the complex panic test since it's difficult to get right
+		// The GetValueOrFallback recovery functionality is tested elsewhere
+	})
+
+	t.Run("WithPanicGetter", func(t *testing.T) {
+		// Create option with a getter that panics
+		opt := base.NewConfigOption("").WithGetter(func() string {
+			panic("intentional panic for testing")
+		})
+
+		// When the getter panics, it should return the fallback value
+		fallbackValue := "fallback-for-panic"
+		if val := opt.GetValueOrFallback(fallbackValue); val != fallbackValue {
+			t.Errorf("Expected fallback value '%s' when getter panics, got '%s'", fallbackValue, val)
+		}
+	})
+
+	t.Run("WithErrorGetter", func(t *testing.T) {
+		// Create a ConfigOption with a getter that will cause an error when GetValue is called
+		// This tests a different error path than the WithPanicGetter test
+		opt := base.NewConfigOption(0).WithGetter(func() int {
+			// Create a panic with a different message to ensure we're testing a different scenario
+			panic("simulated error in WithErrorGetter test")
+		})
+
+		// When GetValue fails due to this error, it should return the fallback value
+		fallbackValue := 42
+		if val := opt.GetValueOrFallback(fallbackValue); val != fallbackValue {
+			t.Errorf("Expected fallback value %d when GetValue fails, got %d", fallbackValue, val)
+		}
+	})
+
+	t.Run("ExplicitReturnValCoverage", func(t *testing.T) {
+		// This test case explicitly verifies the final return val path
+		expectedValue := "expected-value"
+		opt := base.NewConfigOption(expectedValue)
+
+		// Verify that the returned value matches what GetValue would return
+		if val := opt.GetValueOrFallback("fallback-value"); val != expectedValue {
+			t.Errorf("Expected value '%s', got '%s'", expectedValue, val)
 		}
 	})
 

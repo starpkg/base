@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/1set/starlet"
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 )
 
@@ -180,19 +181,27 @@ func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starl
 	if err := m.Initialize(); err != nil {
 		panic(err)
 	}
-	return func() (starlark.StringDict, error) {
-		sd := starlark.StringDict{}
-		for name, option := range m.configs {
-			sd["set_"+name] = m.generateSetBuiltin(name, option)
-			if !option.IsSecret() {
-				sd["get_"+name] = m.generateGetBuiltin(name, option)
-			}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Add config setters and getters
+	sd := make(starlark.StringDict, len(m.configs)*2+len(additionalFuncs))
+	for name, option := range m.configs {
+		sd["set_"+name] = m.generateSetBuiltin(name, option)
+		// Don't expose getters for secret values in Starlark
+		if !option.IsSecret() {
+			sd["get_"+name] = m.generateGetBuiltin(name, option)
 		}
-		for k, v := range additionalFuncs {
-			sd[k] = v
-		}
-		return sd, nil
 	}
+
+	// Add additional functions
+	for k, v := range additionalFuncs {
+		sd[k] = v
+	}
+
+	// Wrap as module data
+	return dataconv.WrapModuleData(moduleName, sd)
 }
 
 // generateSetBuiltin creates a Starlark builtin for setting a configuration option.
@@ -261,15 +270,15 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 	return typedOption.GetValue()
 }
 
-// GetConfigValueWithFallback returns the value of a configuration option with a fallback value if not found or if there's an error.
-// This is the recommended general-purpose function for retrieving configuration values, as it handles error cases gracefully.
+// GetConfigValueWithFallback retrieves a configuration value with a fallback.
+// If the configuration doesn't exist or there's an error retrieving it, the fallback value is returned.
 //
 // Example:
 //
 //	// Instead of:
-//	val, err := base.GetConfigValue[string](m.cfgMod, key)
+//	val, err := GetConfigValue(m, key)
 //	if err != nil {
-//	    val = defaultVal
+//	    val = fallbackVal
 //	}
 //
 //	// You can use:
@@ -277,6 +286,22 @@ func GetConfigValue[T any](m *ConfigurableModule, name string) (T, error) {
 //
 // For even more convenience, use the ConfigurableModuleExt methods via the Extend() function.
 func GetConfigValueWithFallback[T any](m *ConfigurableModule, name string, fallbackVal T) T {
+	// Get the config option
+	option, err := m.GetConfigOption(name)
+	if err != nil {
+		return fallbackVal
+	}
+
+	// For typed options, retrieve the value directly
+	if typedOption, ok := option.(*ConfigOption[T]); ok {
+		val, err := typedOption.GetValue()
+		if err != nil {
+			return fallbackVal
+		}
+		return val
+	}
+
+	// As a fallback, try the generic approach
 	val, err := GetConfigValue[T](m, name)
 	if err != nil {
 		return fallbackVal

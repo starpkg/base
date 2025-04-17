@@ -138,6 +138,7 @@ print("  tags:", get_tags())
 print("  config:", get_config())
 print("  timestamp:", get_timestamp())
 print("  current_time:", get_current_time())
+# Note: Secret values (api_key) are not accessible in Starlark
 
 # Modify values
 set_name("production")
@@ -153,6 +154,7 @@ print("  timeout:", get_timeout())
 print("  debug:", get_debug())
 print("  tags:", get_tags())
 print("  config:", get_config())
+# Note: Secret values remain inaccessible in Starlark
 
 # Test using custom format with the time function
 print("  formatted time:", get_current_time("2006-01-02"))
@@ -191,9 +193,13 @@ print("  formatted time:", get_current_time("2006-01-02"))
 	config, _ := base.GetConfigValue[map[string]interface{}](module, "config")
 	fmt.Printf("  config: %v\n", config)
 
-	// Secret values can't be retrieved
-	_, err = base.GetConfigValue[string](module, "api_key")
-	fmt.Printf("  api_key: %v\n", err)
+	// Secret values can now be retrieved in Go
+	apiKey, err := base.GetConfigValue[string](module, "api_key")
+	if err != nil {
+		fmt.Printf("  api_key: error: %v\n", err)
+	} else {
+		fmt.Printf("  api_key: %s\n", apiKey)
+	}
 
 	// Output:
 	// Verifying updated values in Go:
@@ -202,7 +208,7 @@ print("  formatted time:", get_current_time("2006-01-02"))
 	//   debug: true
 	//   tags: [production live v1]
 	//   config: map[delay:2 monitoring:true retries:5]
-	//   api_key: secret configuration is not retrievable
+	//   api_key: default-key
 }
 
 // Example_complexModule demonstrates building a more complex module
