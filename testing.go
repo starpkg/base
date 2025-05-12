@@ -33,15 +33,22 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleFactory func() star
 		return
 	}
 
+	// Get absolute path for testDirPath
+	absTestDirPath, err := filepath.Abs(testDirPath)
+	if err != nil {
+		t.Logf("Warning: Failed to get absolute path for test directory: %v", err)
+		absTestDirPath = testDirPath // Fall back to relative path
+	}
+
 	// Load environment variables from .env file if it exists
-	if err := loadEnvFile(testDirPath); err != nil {
+	if err := loadEnvFile(absTestDirPath); err != nil {
 		t.Logf("Warning: Failed to load .env file: %v", err)
 	}
 
 	// Find test scripts
-	scripts, err := filepath.Glob(filepath.Join(testDirPath, "*.star"))
+	scripts, err := filepath.Glob(filepath.Join(absTestDirPath, "*.star"))
 	if err != nil || len(scripts) == 0 {
-		t.Skip("No test scripts found in:", testDirPath)
+		t.Skip("No test scripts found in:", absTestDirPath)
 		return
 	}
 
@@ -52,6 +59,24 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleFactory func() star
 	for _, scriptPath := range scripts {
 		scriptName := filepath.Base(scriptPath)
 		t.Run(scriptName, func(t *testing.T) {
+			// Save current working directory
+			originalWd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("Failed to get current working directory: %v", err)
+			}
+
+			// Change to test directory and restore after test
+			err = os.Chdir(absTestDirPath)
+			if err != nil {
+				t.Fatalf("Failed to change to test directory: %v", err)
+			}
+			defer func() {
+				// Restore original working directory
+				if err := os.Chdir(originalWd); err != nil {
+					t.Logf("Warning: Failed to restore original working directory: %v", err)
+				}
+			}()
+
 			// Determine expected outcome from filename
 			shouldPanic := strings.HasPrefix(scriptName, "panic-")
 			if shouldPanic || strings.HasPrefix(scriptName, "test-") {
