@@ -18,10 +18,10 @@ import (
 // Parameters:
 //   - t: the testing instance
 //   - moduleName: name of the module being tested
-//   - moduleLoader: function that loads the module
+//   - moduleFactory: function that creates a fresh module loader for each test run
 //   - extraModules: additional modules to include in the Starlark environment
 //   - testDirPath: path to the directory containing test scripts (if empty, defaults to "../test/{moduleName}")
-func RunStarlarkTests(t *testing.T, moduleName string, moduleLoader starlet.ModuleLoader, extraModules []string, testDirPath string) {
+func RunStarlarkTests(t *testing.T, moduleName string, moduleFactory func() starlet.ModuleLoader, extraModules []string, testDirPath string) {
 	// If testDirPath is not provided, use the default path
 	if testDirPath == "" {
 		testDirPath = filepath.Join("..", "test", moduleName)
@@ -70,7 +70,7 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleLoader starlet.Modu
 
 			// Setup Starlark environment
 			env := starlet.NewWithNames(starlet.StringAnyMap{}, extraModules, extraModules)
-			env.AddLazyloadModules(map[string]starlet.ModuleLoader{moduleName: moduleLoader})
+			env.AddLazyloadModules(map[string]starlet.ModuleLoader{moduleName: moduleFactory()})
 			env.SetScriptContent(content)
 
 			// Capture output for debugging
