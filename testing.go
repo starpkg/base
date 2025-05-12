@@ -2,6 +2,7 @@
 package base
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,11 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleLoader starlet.Modu
 	if _, err := os.Stat(testDirPath); os.IsNotExist(err) {
 		t.Skip("Test directory not found:", testDirPath)
 		return
+	}
+
+	// Load environment variables from .env file if it exists
+	if err := loadEnvFile(testDirPath); err != nil {
+		t.Logf("Warning: Failed to load .env file: %v", err)
 	}
 
 	// Find test scripts
@@ -63,7 +69,7 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleLoader starlet.Modu
 			}
 
 			// Setup Starlark environment
-			env := starlet.NewWithNames(starlet.StringAnyMap{}, nil, extraModules)
+			env := starlet.NewWithNames(starlet.StringAnyMap{}, extraModules, extraModules)
 			env.AddLazyloadModules(map[string]starlet.ModuleLoader{moduleName: moduleLoader})
 			env.SetScriptContent(content)
 
@@ -92,4 +98,53 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleLoader starlet.Modu
 			t.Skipf("No scripts with pattern %q were found", pattern)
 		}
 	}
+}
+
+// loadEnvFile loads environment variables from a .env file
+// if it exists in the specified directory.
+func loadEnvFile(dirPath string) error {
+	envPath := filepath.Join(dirPath, ".env")
+
+	// Check if .env file exists
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return nil // No .env file, not an error
+	}
+
+	// Open the .env file
+	file, err := os.Open(envPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Read line by line
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse key=value pairs
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue // Invalid format, skip
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		// Remove quotes if present
+		if len(value) > 1 && (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
+			(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
+			value = value[1 : len(value)-1]
+		}
+
+		// Set environment variable
+		os.Setenv(key, value)
+	}
+
+	return scanner.Err()
 }
