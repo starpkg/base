@@ -125,6 +125,50 @@ func RunStarlarkTests(t *testing.T, moduleName string, moduleFactory func() star
 	}
 }
 
+// RunTestScript is a helper function that executes a Starlark script with the specified module.
+// This reduces boilerplate code in test functions by centralizing the common setup logic.
+//
+// Parameters:
+//   - t: the testing instance
+//   - script: the Starlark script content to execute
+//   - moduleName: name of the module being tested
+//   - moduleFactory: function that creates a fresh module loader
+//   - extraModuleLoaders: optional map of additional module loaders to include
+//
+// The function will automatically:
+// 1. Create a new module instance using the provided factory
+// 2. Set up a Starlet interpreter
+// 3. Add the module and any extra modules to the interpreter
+// 4. Execute the provided script
+// 5. Handle any execution errors
+func RunTestScript(t *testing.T, script string, moduleName string, moduleFactory func() starlet.ModuleLoader, extraModuleLoaders map[string]starlet.ModuleLoader) {
+	// Create Starlet interpreter with default configuration
+	s := starlet.NewDefault()
+
+	// Create module loaders map starting with the main module
+	moduleLoaders := map[string]starlet.ModuleLoader{
+		moduleName: moduleFactory(),
+	}
+
+	// Add any extra module loaders if provided
+	if extraModuleLoaders != nil {
+		for name, loader := range extraModuleLoaders {
+			moduleLoaders[name] = loader
+		}
+	}
+
+	// Add all modules to the interpreter
+	s.AddLazyloadModules(moduleLoaders)
+
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Test executed successfully")
+}
+
 // loadEnvFile loads environment variables from a .env file
 // if it exists in the specified directory.
 func loadEnvFile(dirPath string) error {
