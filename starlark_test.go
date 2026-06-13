@@ -938,3 +938,31 @@ func TestMapKeyConversion(t *testing.T) {
 		}
 	})
 }
+
+// TestSetValueFromStarlarkNoneRejected is a regression test: a Starlark None
+// (which dataconv.Unmarshal turns into a nil interface) must be rejected with a
+// clean error for every target kind, and must never panic the host. Before the
+// nil guard + recover, int/uint/float/slice/map targets dereferenced a nil
+// reflect.Type and crashed the process.
+func TestSetValueFromStarlarkNoneRejected(t *testing.T) {
+	check := func(name string, set func() error) {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("SetValueFromStarlark(None) panicked for %s: %v", name, r)
+				}
+			}()
+			if err := set(); err == nil {
+				t.Errorf("expected an error setting %s from None, got nil", name)
+			}
+		})
+	}
+
+	check("int", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.None) })
+	check("uint", func() error { return base.NewConfigOption(uint(0)).SetValueFromStarlark(starlark.None) })
+	check("float64", func() error { return base.NewConfigOption(0.0).SetValueFromStarlark(starlark.None) })
+	check("string", func() error { return base.NewConfigOption("").SetValueFromStarlark(starlark.None) })
+	check("bool", func() error { return base.NewConfigOption(false).SetValueFromStarlark(starlark.None) })
+	check("slice", func() error { return base.NewConfigOption([]int{}).SetValueFromStarlark(starlark.None) })
+	check("map", func() error { return base.NewConfigOption(map[string]int{}).SetValueFromStarlark(starlark.None) })
+}
