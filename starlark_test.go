@@ -716,15 +716,17 @@ func TestSetValueFromStarlarkEdgeCases(t *testing.T) {
 			t.Fatal("Expected error for unsupported chan type, got nil")
 		}
 
-		// Test map conversion errors
+		// Test map key conversion errors. dataconv.Unmarshal renders keys as
+		// strings, so numeric-looking keys ("1") now parse to the numeric
+		// target; a genuinely non-numeric key cannot, and still errors.
 		mapOpt := base.NewConfigOption(map[int]string{})
 		dict := starlark.NewDict(2)
-		dict.SetKey(starlark.String("1"), starlark.String("one"))
-		dict.SetKey(starlark.String("2"), starlark.String("two"))
+		dict.SetKey(starlark.String("alpha"), starlark.String("one"))
+		dict.SetKey(starlark.String("beta"), starlark.String("two"))
 
 		err = mapOpt.SetValueFromStarlark(dict)
 		if err == nil {
-			t.Fatal("Expected error for map key conversion, got nil")
+			t.Fatal("Expected error for non-numeric map key conversion, got nil")
 		}
 
 		// Test invalid number format for int conversion
@@ -911,14 +913,17 @@ func TestMapKeyConversion(t *testing.T) {
 			t.Errorf("Error message should contain both source type (string) and target type (CustomKey). Got: %s", errMsg)
 		}
 
-		// Try another case: complex key type requirement with a simple numeric key
+		// Try another case: complex key type requirement with a simple numeric key.
+		// dataconv.Unmarshal now renders the key as the string "42"; a string
+		// (real) cannot convert to complex128, so this still errors — with the
+		// source type reported as string.
 		intKeyOpt := base.NewConfigOption(map[complex128]string{})
 		intDict := starlark.NewDict(1)
 		intDict.SetKey(starlark.MakeInt(42), starlark.String("value"))
 
 		err = intKeyOpt.SetValueFromStarlark(intDict)
 		if err == nil {
-			t.Fatal("Expected error for non-convertible map keys from int to complex, got nil")
+			t.Fatal("Expected error for non-convertible map keys to complex128, got nil")
 		}
 
 		// Check specific error pattern
@@ -928,8 +933,8 @@ func TestMapKeyConversion(t *testing.T) {
 
 		// Check for both types in error message
 		errMsg = err.Error()
-		if !strings.Contains(errMsg, "int") || !strings.Contains(errMsg, "complex128") {
-			t.Errorf("Error message should contain both source type (int) and target type (complex128). Got: %s", errMsg)
+		if !strings.Contains(errMsg, "string") || !strings.Contains(errMsg, "complex128") {
+			t.Errorf("Error message should contain both source type (string) and target type (complex128). Got: %s", errMsg)
 		}
 	})
 }

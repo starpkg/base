@@ -336,12 +336,13 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
 			srcKeyType := reflect.TypeOf(srcKey)
 			srcValueType := reflect.TypeOf(srcValue)
 
-			// Try to convert numeric types for keys
+			// dataconv.Unmarshal renders every dict key as its decimal string
+			// (e.g. "1", "1.5"), so a numeric target key now arrives as a
+			// string: parse it. Other source kinds still convert directly.
 			var destKey reflect.Value
-			if isNumericType(keyType) && isNumericType(srcKeyType) {
-				srcKeyVal := reflect.ValueOf(srcKey)
-				if srcKeyVal.Type().ConvertibleTo(keyType) {
-					destKey = srcKeyVal.Convert(keyType)
+			if isNumericType(keyType) {
+				if f, ok := numericKeyToFloat(srcKey); ok && reflect.TypeOf(f).ConvertibleTo(keyType) {
+					destKey = reflect.ValueOf(f).Convert(keyType)
 				} else {
 					return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
 				}
@@ -399,6 +400,26 @@ func isNumericType(t reflect.Type) bool {
 		return true
 	}
 	return false
+}
+
+// numericKeyToFloat coerces a map key to float64 for conversion to a numeric
+// key type. dataconv.Unmarshal renders dict keys as decimal strings, so the
+// common case is a string parse; already-numeric keys are accepted too.
+func numericKeyToFloat(k interface{}) (float64, bool) {
+	if s, ok := k.(string); ok {
+		f, err := strconv.ParseFloat(s, 64)
+		return f, err == nil
+	}
+	rv := reflect.ValueOf(k)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	}
+	return 0, false
 }
 
 // GetStarlarkValue returns the configuration value as a starlark value.
