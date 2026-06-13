@@ -176,32 +176,37 @@ func (m *ConfigurableModule) Initialize() error {
 	return nil
 }
 
-// LoadModule returns a Starlark module loader with registered built-in functions.
+// LoadModule returns a Starlark module loader with registered built-in
+// functions. Initialization (and its validation) is deferred into the
+// returned loader, so a configuration error surfaces as the loader's error
+// return rather than a panic that would crash the host (PKG-03).
 func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader {
-	if err := m.Initialize(); err != nil {
-		panic(err)
-	}
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Add config setters and getters
-	sd := make(starlark.StringDict, len(m.configs)*2+len(additionalFuncs))
-	for name, option := range m.configs {
-		sd["set_"+name] = m.generateSetBuiltin(name, option)
-		// Don't expose getters for secret values in Starlark
-		if !option.IsSecret() {
-			sd["get_"+name] = m.generateGetBuiltin(name, option)
+	return func() (starlark.StringDict, error) {
+		if err := m.Initialize(); err != nil {
+			return nil, fmt.Errorf("failed to initialize module %q: %w", moduleName, err)
 		}
-	}
 
-	// Add additional functions
-	for k, v := range additionalFuncs {
-		sd[k] = v
-	}
+		m.mu.RLock()
+		defer m.mu.RUnlock()
 
-	// Wrap as module data
-	return dataconv.WrapModuleData(moduleName, sd)
+		// Add config setters and getters
+		sd := make(starlark.StringDict, len(m.configs)*2+len(additionalFuncs))
+		for name, option := range m.configs {
+			sd["set_"+name] = m.generateSetBuiltin(name, option)
+			// Don't expose getters for secret values in Starlark
+			if !option.IsSecret() {
+				sd["get_"+name] = m.generateGetBuiltin(name, option)
+			}
+		}
+
+		// Add additional functions
+		for k, v := range additionalFuncs {
+			sd[k] = v
+		}
+
+		// Wrap as module data
+		return dataconv.WrapModuleData(moduleName, sd)()
+	}
 }
 
 // generateSetBuiltin creates a Starlark builtin for setting a configuration option.

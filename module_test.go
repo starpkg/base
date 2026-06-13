@@ -289,29 +289,16 @@ print(res)
 
 		module.SetConfigOption("number", invalidOption)
 
-		// Attempt to load the module - this should panic since LoadModule calls Initialize()
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Error("Expected LoadModule to panic with invalid configuration")
-			}
-
-			// Verify that the panic message contains information about the validation error
-			panicStr, ok := r.(error)
-			if !ok {
-				t.Errorf("Expected panic to be an error, got: %v (type %T)", r, r)
-				return
-			}
-
-			if !errors.Is(panicStr, base.ErrConfigInvalidValue) {
-				t.Errorf("Expected panic to wrap ErrConfigInvalidValue, got: %v", panicStr)
-			}
-		}()
-
-		_ = module.LoadModule("test_module", nil)
-
-		// We should never reach here because LoadModule should panic
-		t.Fatal("LoadModule should have panicked with invalid configuration")
+		// PKG-03: a configuration error surfaces as the loader's error return,
+		// not a panic. LoadModule itself must not panic.
+		loader := module.LoadModule("test_module", nil)
+		_, err := loader()
+		if err == nil {
+			t.Fatal("Expected the loader to return an error for invalid configuration")
+		}
+		if !errors.Is(err, base.ErrConfigInvalidValue) {
+			t.Errorf("Expected the error to wrap ErrConfigInvalidValue, got: %v", err)
+		}
 	})
 
 	// Test ListConfigs
@@ -1938,4 +1925,35 @@ set_int_option("not_an_int")
 			t.Fatal("Expected error for type mismatch, but got nil")
 		}
 	})
+}
+
+// TestLoadModuleInitFailureReturnsError pins PKG-03: a configuration error must
+// surface as the loader's error return, never as a panic that crashes the host.
+func TestLoadModuleInitFailureReturnsError(t *testing.T) {
+	m := base.NewConfigurableModule()
+	opt := base.NewConfigOption("x").WithName("bad").WithValue("x").
+		WithValidator(func(string) error { return errors.New("always invalid") })
+	if err := m.SetConfigOption("bad", opt); err != nil {
+		t.Fatalf("SetConfigOption: %v", err)
+	}
+
+	// Must not panic even though Initialize() will fail; the error comes back
+	// from the loader instead.
+	loader := m.LoadModule("badmod", nil)
+	if _, err := loader(); err == nil {
+		t.Fatal("expected an error from the loader, got nil")
+	} else if !strings.Contains(err.Error(), "always invalid") {
+		t.Errorf("error %q should wrap the validation failure", err)
+	}
+
+	// A valid module still loads fine through the deferred path.
+	ok := base.NewConfigurableModule()
+	if err := ok.SetConfigOption("greeting", base.NewConfigOption("hi").WithName("greeting")); err != nil {
+		t.Fatalf("SetConfigOption: %v", err)
+	}
+	if sd, err := ok.LoadModule("okmod", nil)(); err != nil {
+		t.Fatalf("valid module should load: %v", err)
+	} else if len(sd) == 0 {
+		t.Error("valid module loaded an empty dict")
+	}
 }
