@@ -276,6 +276,7 @@ func main() {
 - `NewConfigOption[T](defaultValue T) *ConfigOption[T]`
 - `NewConfigurableModule() *ConfigurableModule`
 - `NewConfigurableModuleWithOptions(options ...ModuleOption) (*ConfigurableModule, error)`
+- `NewConfigurableModuleWithConfigOptions(options ...ConfigOptionInterface) (*ConfigurableModule, error)`
 
 ### Configuration Option Methods
 
@@ -288,6 +289,7 @@ func main() {
 - `WithGetter(getter ConfigGetter[T]) *ConfigOption[T]`
 - `SetRequired(required bool) *ConfigOption[T]`
 - `SetSecret(secret bool) *ConfigOption[T]`
+- `GetValueOrFallback(fallbackVal T) T`
 
 ### Module Options
 
@@ -306,7 +308,35 @@ func main() {
 - `GetConfigOption(name string) (ConfigOptionInterface, error)`
 - `GetConfigValue[T any](m *ConfigurableModule, name string) (T, error)`
 - `SetConfigValue[T any](m *ConfigurableModule, name string, value T) error`
+- `SetConfigGetter[T any](m *ConfigurableModule, name string, getter ConfigGetter[T]) error`
+- `SetConfigEnvVar[T any](m *ConfigurableModule, name string, envVar string) error`
+- `SetConfigDefault[T any](m *ConfigurableModule, name string, defaultValue T) error`
 - `LoadModule(moduleName string, additionalFuncs starlark.StringDict) starlet.ModuleLoader`
+
+### Convenience helpers
+
+These reduce the boilerplate of checking errors when reading values; they fall back to the
+provided value when the config is missing or fails to resolve. The `WithConfig*` forms are the
+functional-option equivalents of the `SetConfig*` runtime setters listed above.
+
+- `GetConfigValueWithFallback[T any](m *ConfigurableModule, name string, fallbackVal T) T`
+- `(o *ConfigOption[T]) GetValueOrFallback(fallbackVal T) T`
+- `WithConfigGetter[T any](name string, getter ConfigGetter[T]) ModuleOption`
+- `WithConfigEnvVar[T any](name string, envVar string) ModuleOption`
+- `WithConfigDefault[T any](name string, defaultValue T) ModuleOption`
+
+### Extend()
+
+`Extend()` wraps a `ConfigurableModule` in a `ConfigurableModuleExt`, exposing typed getters that
+return the requested type directly and accept an optional fallback (defaulting to the type's zero
+value). These are thin wrappers over `GetConfigValueWithFallback`.
+
+- `(m *ConfigurableModule) Extend() *ConfigurableModuleExt`
+- `(e *ConfigurableModuleExt) GetString(key string, fallbackVal ...string) string`
+- `(e *ConfigurableModuleExt) GetInt(key string, fallbackVal ...int) int`
+- `(e *ConfigurableModuleExt) GetUint(key string, fallbackVal ...uint) uint`
+- `(e *ConfigurableModuleExt) GetBool(key string, fallbackVal ...bool) bool`
+- `(e *ConfigurableModuleExt) GetFloat(key string, fallbackVal ...float64) float64`
 
 ## Contributing
 
