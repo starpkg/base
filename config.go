@@ -284,10 +284,25 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 //////////////////////////////////////////////////////////////////////////
 
 // SetValueFromStarlark sets the configuration option from a Starlark value.
-func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) error {
+//
+// It never lets a reflection/conversion panic escape to the host: a recover
+// guard (mirroring resolveValue) turns any panic into an error, and None/nil
+// input is rejected up front (dataconv.Unmarshal(None) yields a nil interface,
+// whose reflect.TypeOf is a nil Type that would panic on Kind()).
+func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", ErrConfigInvalidValue, r)
+		}
+	}()
+
 	gv, err := dataconv.Unmarshal(v)
 	if err != nil {
 		return err
+	}
+	if gv == nil {
+		var zero T
+		return fmt.Errorf("%w: cannot set %q (%T) from None/nil", ErrConfigInvalidValue, o.Name, zero)
 	}
 
 	targetType := reflect.TypeOf((*T)(nil)).Elem()
