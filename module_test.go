@@ -1708,6 +1708,47 @@ func TestNewConfigurableModuleWithConfigOptionsEdgeCases(t *testing.T) {
 			t.Error("ext_string option should exist")
 		}
 	})
+
+	// WithUnnamedOptions covers the documented auto-naming fallback: an option
+	// with an empty Name gets "option_<index>" (1-based), and the generated name
+	// is written back onto the option so later lookups by either key agree.
+	t.Run("WithUnnamedOptions", func(t *testing.T) {
+		// First option named, second and third unnamed.
+		named := base.NewConfigOption("v0").WithName("named")
+		unnamed1 := base.NewConfigOption(1) // no name -> "option_2"
+		unnamed2 := base.NewConfigOption(2) // no name -> "option_3"
+
+		module, err := base.NewConfigurableModuleWithConfigOptions(named, unnamed1, unnamed2)
+		if err != nil {
+			t.Fatalf("NewConfigurableModuleWithConfigOptions failed: %v", err)
+		}
+
+		configs := module.ListConfigs()
+		if len(configs) != 3 {
+			t.Fatalf("expected 3 options, got %d", len(configs))
+		}
+		for _, key := range []string{"named", "option_2", "option_3"} {
+			if _, ok := configs[key]; !ok {
+				t.Errorf("expected option keyed %q to exist; got keys %v", key, keysOf(configs))
+			}
+		}
+		// The generated name is stamped back onto the option itself.
+		if got := unnamed1.GetName(); got != "option_2" {
+			t.Errorf("expected unnamed1.GetName()==option_2, got %q", got)
+		}
+		if v, err := base.GetConfigValue[int](module, "option_3"); err != nil || v != 2 {
+			t.Errorf("expected option_3 value 2, got v=%d err=%v", v, err)
+		}
+	})
+}
+
+// keysOf returns the keys of a config map for diagnostics.
+func keysOf(m map[string]map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestGetConfigValueWithFallback(t *testing.T) {
