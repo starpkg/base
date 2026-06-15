@@ -1,6 +1,7 @@
 package base_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -1099,6 +1100,132 @@ func TestConfigOptionGetValueOrFallback(t *testing.T) {
 		// When default is empty string, it should return the empty string, not the fallback parameter
 		if val := opt.GetValueOrFallback("fallback-param"); val != "" {
 			t.Errorf("Expected empty string, got '%s'", val)
+		}
+	})
+}
+
+// TestConvertEnvValue exercises convertEnvValue (reached via GetValue/resolveValue
+// when an env var is set) across the type/format branches the existing
+// EnvironmentVariables section does not cover. Sections:
+//   - BoolFormats          — every accepted true/false spelling + an invalid one
+//   - MapEnvVar            — JSON object decoded into a map target
+//   - SliceParseFailure    — well-formed-prefix but invalid JSON falls back to default
+//   - NumericParseFailures — non-numeric env strings for int/uint/float fall back
+//   - Float32EnvVar        — narrowing float64 parse into a float32 target
+//   - InterfaceTargetRecovered — degenerate ConfigOption[interface{}]+env: the nil
+//     reflect.Type would panic in convertEnvValue, but resolveValue's recover
+//     turns it into ErrConfigGetterPanic rather than crashing the host.
+func TestConvertEnvValue(t *testing.T) {
+	t.Run("BoolFormats", func(t *testing.T) {
+		const key = "TEST_CONV_BOOL"
+		trueForms := []string{"true", "True", "TRUE", "yes", "YES", "1", "on", "ON"}
+		for _, f := range trueForms {
+			t.Setenv(key, f)
+			opt := base.NewConfigOption(false).WithEnvVar(key)
+			if v := opt.GetValueOrFallback(false); v != true {
+				t.Errorf("env %q: expected true, got %v", f, v)
+			}
+		}
+		falseForms := []string{"false", "False", "no", "NO", "0", "off", "OFF"}
+		for _, f := range falseForms {
+			t.Setenv(key, f)
+			// default true so we can tell a successful parse-to-false from a fallback.
+			opt := base.NewConfigOption(true).WithEnvVar(key)
+			if v := opt.GetValueOrFallback(true); v != false {
+				t.Errorf("env %q: expected false, got %v", f, v)
+			}
+		}
+		// An unrecognised bool string is not converted and falls back to the default.
+		t.Setenv(key, "maybe")
+		opt := base.NewConfigOption(true).WithEnvVar(key)
+		if v := opt.GetValueOrFallback(false); v != true {
+			t.Errorf("invalid bool env: expected fallback to default true, got %v", v)
+		}
+	})
+
+	t.Run("MapEnvVar", func(t *testing.T) {
+		const key = "TEST_CONV_MAP"
+		t.Setenv(key, `{"a": 1, "b": 2}`)
+		opt := base.NewConfigOption(map[string]int{"d": 9}).WithEnvVar(key)
+		v, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if len(v) != 2 || v["a"] != 1 || v["b"] != 2 {
+			t.Errorf("expected {a:1 b:2} from env JSON, got %v", v)
+		}
+	})
+
+	t.Run("SliceParseFailure", func(t *testing.T) {
+		const key = "TEST_CONV_SLICE_BAD"
+		// Begins with '[' (so the JSON branch is taken) but is not valid JSON;
+		// convertEnvValue reports failure and resolveValue falls back to default.
+		t.Setenv(key, "[1, 2, ")
+		opt := base.NewConfigOption([]int{7}).WithEnvVar(key)
+		v, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if len(v) != 1 || v[0] != 7 {
+			t.Errorf("expected fallback to default [7] on bad JSON, got %v", v)
+		}
+	})
+
+	t.Run("NumericParseFailures", func(t *testing.T) {
+		const key = "TEST_CONV_NUM_BAD"
+		t.Setenv(key, "not_a_number")
+
+		intOpt := base.NewConfigOption(11).WithEnvVar(key)
+		if v := intOpt.GetValueOrFallback(0); v != 11 {
+			t.Errorf("int: expected fallback to default 11, got %d", v)
+		}
+		uintOpt := base.NewConfigOption(uint(22)).WithEnvVar(key)
+		if v := uintOpt.GetValueOrFallback(0); v != 22 {
+			t.Errorf("uint: expected fallback to default 22, got %d", v)
+		}
+		floatOpt := base.NewConfigOption(3.5).WithEnvVar(key)
+		if v := floatOpt.GetValueOrFallback(0); v != 3.5 {
+			t.Errorf("float: expected fallback to default 3.5, got %f", v)
+		}
+		// A negative value is invalid for an unsigned target and must fall back.
+		t.Setenv(key, "-1")
+		uintNeg := base.NewConfigOption(uint(5)).WithEnvVar(key)
+		if v := uintNeg.GetValueOrFallback(0); v != 5 {
+			t.Errorf("uint(-1): expected fallback to default 5, got %d", v)
+		}
+	})
+
+	t.Run("Float32EnvVar", func(t *testing.T) {
+		const key = "TEST_CONV_F32"
+		t.Setenv(key, "2.5")
+		opt := base.NewConfigOption(float32(0)).WithEnvVar(key)
+		v, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue failed: %v", err)
+		}
+		if v != float32(2.5) {
+			t.Errorf("expected float32 2.5, got %v", v)
+		}
+	})
+
+	t.Run("InterfaceTargetRecovered", func(t *testing.T) {
+		const key = "TEST_CONV_ANY"
+		t.Setenv(key, "hello")
+		// ConfigOption[interface{}] with a zero (nil) interface: reflect.TypeOf(nil)
+		// is a nil Type whose Kind() panics. The recover in resolveValue must
+		// convert that into an error, never a host crash.
+		opt := base.NewConfigOption[interface{}](nil).WithEnvVar(key)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("GetValue panicked for interface{} env target: %v", r)
+			}
+		}()
+		v, err := opt.GetValue()
+		if err == nil {
+			t.Fatalf("expected a recovered error for interface{} env target, got value %v", v)
+		}
+		if !errors.Is(err, base.ErrConfigGetterPanic) {
+			t.Errorf("expected ErrConfigGetterPanic, got %v", err)
 		}
 	})
 }

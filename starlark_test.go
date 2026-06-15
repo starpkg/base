@@ -3,6 +3,7 @@ package base_test
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/1set/starlet"
@@ -679,6 +680,111 @@ func TestGetStarlarkValue(t *testing.T) {
 		_, err = errorOpt.GetStarlarkValue()
 		if err == nil {
 			t.Fatal("Expected error from panic in getter, got nil")
+		}
+	})
+}
+
+// TestHardeningInvariants is an adversarial regression suite for the
+// "Invariants / hardening" properties in CLAUDE.md that the rest of the file
+// does not already pin down. Each section tries to break an invariant from the
+// script-facing surface and asserts the module degrades to a clean error rather
+// than crashing or corrupting the host. Sections:
+//   - ValidatorPanicRecovered    — a validator that panics during set_<name> is
+//     recovered into a wrapped ErrConfigInvalidValue, not a host panic.
+//   - ConcurrentScriptExecution  — one initialized module shared by many
+//     scripts running set_/get_ concurrently is race-free (run under -race).
+//   - SecretHasNoScriptGetter    — a secret option exposes set_ but no get_, so
+//     a script load() of get_<secret> fails (the value is unreadable from script).
+//   - LoadModuleRequiredError    — a required-but-unset option makes the loader
+//     return an error, surfaced to the script as a load failure, never a panic.
+func TestHardeningInvariants(t *testing.T) {
+	t.Run("ValidatorPanicRecovered", func(t *testing.T) {
+		opt := base.NewConfigOption("").WithName("v").
+			WithValidator(func(string) error { panic("validator boom") })
+
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped SetValueFromStarlark: %v", r)
+			}
+		}()
+		err := opt.SetValueFromStarlark(starlark.String("x"))
+		if err == nil {
+			t.Fatal("expected an error from a panicking validator, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid config value") {
+			t.Errorf("expected ErrConfigInvalidValue wrap, got %v", err)
+		}
+	})
+
+	t.Run("ConcurrentScriptExecution", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+		module.SetConfigOption("counter", base.NewConfigOption(0))
+		module.SetConfigOption("name", base.NewConfigOption("init"))
+		loader := module.LoadModule("m", nil)
+
+		script := []byte(`
+load("m", "set_counter", "get_counter", "set_name", "get_name")
+set_counter(7)
+a = get_counter()
+set_name("x")
+b = get_name()
+`)
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				env := starlet.NewDefault()
+				env.SetLazyloadModules(map[string]starlet.ModuleLoader{"m": loader})
+				env.SetScriptContent(script)
+				if _, err := env.Run(); err != nil {
+					t.Errorf("concurrent script failed: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+
+	t.Run("SecretHasNoScriptGetter", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+		module.SetConfigOption("secret", base.NewConfigOption("s3cr3t").SetSecret(true))
+		loader := module.LoadModule("m", nil)
+
+		env := starlet.NewDefault()
+		env.SetLazyloadModules(map[string]starlet.ModuleLoader{"m": loader})
+		env.SetScriptContent([]byte(`load("m", "get_secret")`))
+		_, err := env.Run()
+		if err == nil {
+			t.Fatal("expected load of get_secret to fail (secret has no getter)")
+		}
+		if !strings.Contains(err.Error(), "get_secret") {
+			t.Errorf("expected error to mention get_secret, got %v", err)
+		}
+		// The setter, however, must exist.
+		env2 := starlet.NewDefault()
+		env2.SetLazyloadModules(map[string]starlet.ModuleLoader{"m": loader})
+		env2.SetScriptContent([]byte(`load("m", "set_secret")` + "\n" + `set_secret("new")`))
+		if _, err := env2.Run(); err != nil {
+			t.Errorf("set_secret should be exposed and callable, got %v", err)
+		}
+	})
+
+	t.Run("LoadModuleRequiredError", func(t *testing.T) {
+		module := base.NewConfigurableModule()
+		// Required, with no value/getter/env/default -> Initialize fails inside the loader.
+		module.SetConfigOption("must", base.NewConfigOption("").
+			WithName("must").SetRequired(true))
+		loader := module.LoadModule("m", nil)
+
+		env := starlet.NewDefault()
+		env.SetLazyloadModules(map[string]starlet.ModuleLoader{"m": loader})
+		env.SetScriptContent([]byte(`load("m", "set_must")`))
+		_, err := env.Run()
+		if err == nil {
+			t.Fatal("expected a required-config error surfaced through the loader, got nil")
+		}
+		if !strings.Contains(err.Error(), "required config not set") {
+			t.Errorf("expected 'required config not set', got %v", err)
 		}
 	})
 }

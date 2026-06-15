@@ -209,9 +209,15 @@ func loadEnvFile(dirPath string) error {
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 
-		// Remove quotes if present
-		if len(value) > 1 && (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
-			(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
+		// Remove a surrounding pair of matching quotes if present. The
+		// len(value) > 1 guard must apply to both quote styles: without the
+		// parentheses, operator precedence (&& over ||) left the single-quote
+		// branch unguarded, so a lone-quote value (e.g. KEY=') sliced
+		// value[1:0] and panicked. Stripping still requires at least two
+		// characters, so previously-stripped values are unaffected.
+		if len(value) > 1 &&
+			((strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
+				(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'"))) {
 			value = value[1 : len(value)-1]
 		}
 
