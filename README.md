@@ -43,14 +43,19 @@ func main() {
             
     // 3. Load the module with additional functions
     loader := module.LoadModule("mymodule", nil)
-    
+
     // 4. Run Starlark code with the module
-    starlet.Run(`
-        load("mymodule", "set_api_key", "get_endpoint")
-        
-        set_api_key("my-secret-key")
-        print("Using endpoint:", get_endpoint())
-    `, loader)
+    machine := starlet.NewDefault()
+    machine.SetLazyloadModules(map[string]starlet.ModuleLoader{"mymodule": loader})
+    machine.SetScriptContent([]byte(`
+load("mymodule", "set_api_key", "get_endpoint")
+
+set_api_key("my-secret-key")
+print("Using endpoint:", get_endpoint())
+`))
+    if _, err := machine.Run(); err != nil {
+        panic(err)
+    }
 }
 ```
 
@@ -216,9 +221,7 @@ print(get_endpoint())              # generated get_ builtin (non-secret only)
 package main
 
 import (
-    "errors"
     "fmt"
-    "time"
 
     "github.com/starpkg/base"
     "github.com/1set/starlet"
@@ -268,21 +271,26 @@ func main() {
 
     // Load the module
     loader := module.LoadModule("mymodule", additionalFuncs)
-    
+
     // Execute Starlark code
-    starlet.Run(`
-        load("mymodule", "set_api_key", "set_timeout", "get_endpoint", "make_request")
-        
-        # Configure the module
-        set_api_key("my-secret-key-12345")
-        set_timeout(60)
-        
-        # Print the endpoint (uses default or environment variable)
-        print("Endpoint:", get_endpoint())
-        
-        # Use the module function
-        make_request()
-    `, loader)
+    machine := starlet.NewDefault()
+    machine.SetLazyloadModules(map[string]starlet.ModuleLoader{"mymodule": loader})
+    machine.SetScriptContent([]byte(`
+load("mymodule", "set_api_key", "set_timeout", "get_endpoint", "make_request")
+
+# Configure the module
+set_api_key("my-secret-key-12345")
+set_timeout(60)
+
+# Print the endpoint (uses default or environment variable)
+print("Endpoint:", get_endpoint())
+
+# Use the module function
+make_request()
+`))
+    if _, err := machine.Run(); err != nil {
+        panic(err)
+    }
 }
 ```
 

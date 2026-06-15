@@ -60,7 +60,7 @@ The module is a **typed-config core with a Starlark adapter on top**. One generi
 
 ## Test organization
 
-Group by functional goal — **do not add one `*_test.go` per fix.** The homes are: `config_test.go` (option resolution, validation, env parsing, `SetValueFromStarlark` including the None/panic-safety sections), `module_test.go` (container lifecycle, `LoadModule`, the generated builtins, concurrency), `extend_test.go` (the `Extend()` convenience getters), `starlark_test.go` (end-to-end script behavior), and `example_test.go` (the `Example*` runnable docs). Add a new test as a **section in the matching file**, not a new file. Tests are table/example-driven; no third-party test framework.
+Group by functional goal — **do not add one `*_test.go` per fix.** The homes are: `config_test.go` (option resolution, validation, env parsing, `GetValueOrFallback`), `module_test.go` (container lifecycle, `LoadModule`, the generated builtins, the free-function setters/getters, concurrency), `extend_test.go` (the `Extend()` convenience getters), `starlark_test.go` (end-to-end script behavior plus the `SetValueFromStarlark`/`GetStarlarkValue` conversion, secret-access, map-key, and None/panic-safety sections), and `example_test.go` (the `Example*` runnable docs). Add a new test as a **section in the matching file**, not a new file. Tests are table/example-driven; no third-party test framework.
 
 The exported `RunStarlarkTests`/`RunTestScript` helpers target `../test/base/*.star` integration scripts that live in the **private `starpkg/test` repo** and auto-skip when that directory is absent (e.g. in CI). base's own tests don't ship those scripts.
 
