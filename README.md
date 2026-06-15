@@ -2,6 +2,7 @@
 
 [![godoc](https://pkg.go.dev/badge/github.com/starpkg/base.svg)](https://pkg.go.dev/github.com/starpkg/base)
 [![licenese](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![codecov](https://codecov.io/gh/starpkg/base/graph/badge.svg)](https://codecov.io/gh/starpkg/base)
 
 A typed, configurable foundation for building Starlark modules that connect to online services and external libraries.
 
