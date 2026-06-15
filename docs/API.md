@@ -28,10 +28,10 @@ When a `ConfigurableModule` is loaded with `LoadModule(moduleName, …)`, each
 registered option contributes one or two builtins to the module namespace, named
 by string concatenation from the option's key:
 
-| Generated builtin | Generated for | Signature |
-|-------------------|---------------|-----------|
-| `set_<name>` | every option | `set_<name>(value)` |
-| `get_<name>` | non-secret options only | `get_<name>()` |
+| Generated builtin | Generated for           | Signature           |
+|-------------------|-------------------------|---------------------|
+| `set_<name>`      | every option            | `set_<name>(value)` |
+| `get_<name>`      | non-secret options only | `get_<name>()`      |
 
 So a module with options `api_key` (secret) and `endpoint` (non-secret) exposes
 exactly `set_api_key`, `set_endpoint`, and `get_endpoint` — a setter for every
@@ -127,21 +127,23 @@ make_request()            # a host-supplied additional function
 
 The accessors marshal values between Starlark and the option's Go type:
 
-| Direction | Mechanism | Notes |
-|-----------|-----------|-------|
-| Starlark → Go (`set_<name>`) | `dataconv.Unmarshal` + reflect coercion | numeric kinds convert across; lists → slices element-wise; dicts → maps (numeric keys parsed from their decimal-string form); `None`/`nil` rejected |
-| Go → Starlark (`get_<name>`) | `dataconv.Marshal` | resolved value (explicit > getter > env > default) marshalled back |
+- **Starlark → Go (`set_<name>`)** — `dataconv.Unmarshal` followed by reflect
+  coercion: numeric kinds convert across; lists become slices element-wise; dicts
+  become maps (numeric keys are parsed from their decimal-string form); `None`/`nil`
+  is rejected.
+- **Go → Starlark (`get_<name>`)** — `dataconv.Marshal`: the resolved value
+  (explicit > getter > env > default) is marshalled back.
 
 Environment-variable string values (resolution priority 3) are parsed into the
-option's Go type before marshalling:
+option's Go type before marshalling, by target type:
 
-| Target type | Accepted env-var forms |
-|-------------|------------------------|
-| string | the raw string, as-is |
-| bool | `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off` (case-insensitive) |
-| integer (`int`, `int8…int64`, `uint`, `uint8…uint64`) | a base-10 integer literal |
-| float (`float32`, `float64`) | a decimal/float literal |
-| slice / map (complex types) | a JSON document (a value starting with `[` or `{`) |
+- **string** — the raw string, as-is.
+- **bool** — `true`/`false`, `yes`/`no`, `1`/`0`, `on`/`off` (case-insensitive).
+- **integer** (`int`, `int8…int64`, `uint`, `uint8…uint64`) — a base-10 integer
+  literal.
+- **float** (`float32`, `float64`) — a decimal/float literal.
+- **slice / map** (complex types) — a JSON document (a value starting with `[` or
+  `{`).
 
 A value that fails to parse for its target type is ignored, and resolution falls
 through to the default.
@@ -164,15 +166,16 @@ variable is whatever name the host passes to `WithEnvVar`; the conventional name
 a `starpkg` domain module uses is `<MODULE>_<KEY>` (uppercased), e.g. a
 `timeout` option on the `sqlite` module reads `SQLITE_TIMEOUT`.
 
-The table below documents the generated-accessor contract that every
-`base`-built option follows. `<MODULE>` is the loaded module name, `<KEY>` the
-uppercased option key, and the default/description are whatever the host declared
-on the option.
+The generated-accessor contract that every `base`-built option follows is below.
+`<MODULE>` is the loaded module name, `<KEY>` the uppercased option key; the env
+var is host-chosen via `WithEnvVar` (conventionally `<MODULE>_<KEY>`), and the
+default/description are whatever the host declared (`WithDefault` /
+`NewConfigOption`, `WithDescription`).
 
-| Option | Getter | Setter | Env var | Default | Description |
-|--------|--------|--------|---------|---------|-------------|
-| `<key>` (non-secret) | `get_<key>` | `set_<key>` | `<MODULE>_<KEY>` (host-chosen via `WithEnvVar`) | host-declared (`WithDefault` / `NewConfigOption`) | host-declared (`WithDescription`) |
-| `<key>` (secret) | *(none — secrets are never readable from a script)* | `set_<key>` | `<MODULE>_<KEY>` (host-chosen via `WithEnvVar`) | host-declared | host-declared |
+- **`<key>` (non-secret)** — getter `get_<key>`, setter `set_<key>`; both value
+  reads and writes are reachable from a script.
+- **`<key>` (secret)** — setter `set_<key>` only; no getter is generated, since
+  secrets are never readable from a script.
 
 **Secret options expose only `set_<key>` — never a getter.** A host marks an
 option secret with `SetSecret(true)` (or the equivalent `genSecretConfigOption`
