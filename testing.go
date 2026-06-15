@@ -1,5 +1,9 @@
-// Package base provides foundational constructs for Starlark modules.
 package base
+
+// This file provides foundational test helpers for Starlark modules built on
+// ConfigurableModule. The canonical package doc comment lives in errors.go;
+// only one file in a package should carry the "// Package base ..." comment
+// (revive's package-comments rule), so this file deliberately omits it.
 
 import (
 	"bufio"

@@ -5,6 +5,8 @@
 
 A typed, configurable foundation for building Starlark modules that connect to online services and external libraries.
 
+> **Where this sits.** The `starpkg` ecosystem exists to give Starlark scripts *support for the necessary **local** operations + simple abstractions over common **online** services, for ease of use.* `base` is the layer beneath all of that: it is not itself a local capability or an online-service binding, but the **shared plumbing** every domain module (`sqlite`, `web`, `llm`, `mq`, `s3`, `email`, …) uses to declare its typed configuration, resolve it from values / getters / environment / defaults, keep secrets out of scripts, and surface the result to Starlark. It is an **L4 starpkg** module that depends downward on `1set/starlet` (the Machine + `dataconv`) and transitively on `1set/starlight` + `go.starlark.net`; nothing in the ecosystem sits below it except those runtimes.
+
 ## Overview
 
 The `base` package provides a framework for creating Starlark modules with:
@@ -41,14 +43,19 @@ func main() {
             
     // 3. Load the module with additional functions
     loader := module.LoadModule("mymodule", nil)
-    
+
     // 4. Run Starlark code with the module
-    starlet.Run(`
-        load("mymodule", "set_api_key", "get_endpoint")
-        
-        set_api_key("my-secret-key")
-        print("Using endpoint:", get_endpoint())
-    `, loader)
+    machine := starlet.NewDefault()
+    machine.SetLazyloadModules(map[string]starlet.ModuleLoader{"mymodule": loader})
+    machine.SetScriptContent([]byte(`
+load("mymodule", "set_api_key", "get_endpoint")
+
+set_api_key("my-secret-key")
+print("Using endpoint:", get_endpoint())
+`))
+    if _, err := machine.Run(); err != nil {
+        panic(err)
+    }
 }
 ```
 
@@ -187,15 +194,34 @@ timeout = get_timeout()
 timestamp = get_timestamp()
 ```
 
+### Generated Starlark API surface
+
+`base` defines **no fixed-name builtins of its own**. Instead, `LoadModule(moduleName, additionalFuncs)` derives the script-facing surface from the options you registered, so the exact function names depend on your config keys. For every registered config option named `<name>`, the loader generates:
+
+| Generated builtin | Signature | Behaviour |
+|---|---|---|
+| `set_<name>` | `set_<name>(value)` | Sets the option from a single positional `value`. The value is converted from Starlark to Go via `dataconv.Unmarshal`; numeric/slice/map coercion is applied to match the option's Go type. Returns `None`; a type mismatch (or `None`/`nil`) raises a script error rather than crashing the host. |
+| `get_<name>` | `get_<name>()` | Returns the option's resolved value (per the priority order), marshalled back to a Starlark value. **Only generated for non-secret options** — a `SetSecret(true)` option exposes its `set_<name>` but no `get_<name>`. |
+
+So a module with options `api_key` (secret) and `endpoint` exposes exactly `set_api_key`, `set_endpoint`, and `get_endpoint` — note the `set_`-prefixed setter for every option and the `get_`-prefixed getter for every non-secret option. Any callables you pass in `additionalFuncs` (a `starlark.StringDict`) are merged in alongside these under their own names.
+
+```python
+load("mymodule", "set_api_key", "set_endpoint", "get_endpoint")
+
+set_api_key("sk-...")              # secret: settable, but no get_api_key exists
+set_endpoint("https://api.prod")   # generated set_ builtin
+print(get_endpoint())              # generated get_ builtin (non-secret only)
+```
+
+> The doc-coverage gate (`doccov`) sees these as the `set_` and `get_` builtins because their names are built by string concatenation (`"set_" + name`). They are documented above as the `set_<name>` / `get_<name>` families.
+
 ### Complete Example
 
 ```go
 package main
 
 import (
-    "errors"
     "fmt"
-    "time"
 
     "github.com/starpkg/base"
     "github.com/1set/starlet"
@@ -245,21 +271,26 @@ func main() {
 
     // Load the module
     loader := module.LoadModule("mymodule", additionalFuncs)
-    
+
     // Execute Starlark code
-    starlet.Run(`
-        load("mymodule", "set_api_key", "set_timeout", "get_endpoint", "make_request")
-        
-        # Configure the module
-        set_api_key("my-secret-key-12345")
-        set_timeout(60)
-        
-        # Print the endpoint (uses default or environment variable)
-        print("Endpoint:", get_endpoint())
-        
-        # Use the module function
-        make_request()
-    `, loader)
+    machine := starlet.NewDefault()
+    machine.SetLazyloadModules(map[string]starlet.ModuleLoader{"mymodule": loader})
+    machine.SetScriptContent([]byte(`
+load("mymodule", "set_api_key", "set_timeout", "get_endpoint", "make_request")
+
+# Configure the module
+set_api_key("my-secret-key-12345")
+set_timeout(60)
+
+# Print the endpoint (uses default or environment variable)
+print("Endpoint:", get_endpoint())
+
+# Use the module function
+make_request()
+`))
+    if _, err := machine.Run(); err != nil {
+        panic(err)
+    }
 }
 ```
 
