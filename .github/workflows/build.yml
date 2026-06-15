@@ -18,5 +18,5 @@ jobs:
     with:
       go-floor: "1.19"
       doc-coverage: true
-      cov-min: 78
+      cov-min: 93
     secrets: inherit
