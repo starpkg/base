@@ -3,6 +3,7 @@ package base
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -318,13 +319,14 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 			srcElem := sourceValue.Index(i).Interface()
 			srcElemType := reflect.TypeOf(srcElem)
 
-			// Try to convert numeric types
+			// Try to convert numeric types (checked: reject silent narrowing/overflow)
 			if isNumericType(elemType) && isNumericType(srcElemType) {
-				srcVal := reflect.ValueOf(srcElem)
-				if srcVal.Type().ConvertibleTo(elemType) {
-					destSlice.Index(i).Set(srcVal.Convert(elemType))
-					continue
+				cv, cerr := checkedConvert(reflect.ValueOf(srcElem), elemType)
+				if cerr != nil {
+					return fmt.Errorf("element at index %d: %v", i, cerr)
 				}
+				destSlice.Index(i).Set(cv)
+				continue
 			}
 
 			// Try direct conversion
@@ -354,6 +356,11 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 			// dataconv.Unmarshal renders every dict key as its decimal string
 			// (e.g. "1", "1.5"), so a numeric target key now arrives as a
 			// string: parse it. Other source kinds still convert directly.
+			// Note: map KEYS keep the historical plain-convert semantics (their
+			// dict-key-stringification path has its own established behaviour and
+			// tests); the checked-conversion hardening (PKG-24) targets scalar,
+			// slice-element, and map-VALUE numeric narrowing, which is where the
+			// silent-corruption bug was found.
 			var destKey reflect.Value
 			if isNumericType(keyType) {
 				if f, ok := numericKeyToFloat(srcKey); ok && reflect.TypeOf(f).ConvertibleTo(keyType) {
@@ -367,15 +374,14 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 				return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
 			}
 
-			// Try to convert numeric types for values
+			// Try to convert numeric types for values (checked: reject silent narrowing/overflow)
 			var destValue reflect.Value
 			if isNumericType(valueType) && isNumericType(srcValueType) {
-				srcValueVal := reflect.ValueOf(srcValue)
-				if srcValueVal.Type().ConvertibleTo(valueType) {
-					destValue = srcValueVal.Convert(valueType)
-				} else {
-					return fmt.Errorf("map value cannot be converted from %v to %v", srcValueType, valueType)
+				cv, cerr := checkedConvert(reflect.ValueOf(srcValue), valueType)
+				if cerr != nil {
+					return fmt.Errorf("map value: %v", cerr)
 				}
+				destValue = cv
 			} else if srcValueType.ConvertibleTo(valueType) {
 				destValue = reflect.ValueOf(srcValue).Convert(valueType)
 			} else {
@@ -388,12 +394,13 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 		return o.SetValue(destMap.Interface().(T))
 	}
 
-	// Handle simple types
+	// Handle simple types (checked: reject silent narrowing/overflow/NaN/Inf)
 	if isNumericType(targetType) && isNumericType(sourceType) {
-		if sourceValue.Type().ConvertibleTo(targetType) {
-			return o.SetValue(sourceValue.Convert(targetType).Interface().(T))
+		cv, cerr := checkedConvert(sourceValue, targetType)
+		if cerr != nil {
+			return fmt.Errorf("%w: cannot set %q: %v", ErrConfigInvalidValue, o.Name, cerr)
 		}
-		return fmt.Errorf("value cannot be converted from %v to %v", sourceType, targetType)
+		return o.SetValue(cv.Interface().(T))
 	}
 
 	// Try direct type assertion
@@ -415,6 +422,73 @@ func isNumericType(t reflect.Type) bool {
 		return true
 	}
 	return false
+}
+
+// checkedConvert converts val to type t, but — unlike a bare reflect.Convert —
+// REJECTS conversions that would silently corrupt the value: integer narrowing
+// that overflows the target, a negative value into an unsigned target, NaN/Inf
+// or a non-integral float into an integer, and a float that overflows the
+// target float. This mirrors starlight's convert.checkedConvert so a config
+// value set from a script (or env) can never be silently truncated/wrapped
+// (the ecosystem "checked conversions" invariant). Non-numeric conversions are
+// passed through unchanged.
+func checkedConvert(val reflect.Value, t reflect.Type) (reflect.Value, error) {
+	if val.Type().AssignableTo(t) {
+		return val, nil
+	}
+	if !val.Type().ConvertibleTo(t) {
+		return reflect.Value{}, fmt.Errorf("value of type %s cannot be converted to type %s", val.Type(), t)
+	}
+	zt := reflect.Zero(t)
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		switch val.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if zt.OverflowInt(val.Int()) {
+				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", val.Int(), t)
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			u := val.Uint()
+			if u > math.MaxInt64 || zt.OverflowInt(int64(u)) {
+				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", u, t)
+			}
+		case reflect.Float32, reflect.Float64:
+			f := val.Float()
+			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+				return reflect.Value{}, fmt.Errorf("value %v would be truncated when converted to type %s", f, t)
+			}
+			if f < math.MinInt64 || f >= math.MaxInt64 || zt.OverflowInt(int64(f)) {
+				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", f, t)
+			}
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		switch val.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			i := val.Int()
+			if i < 0 || zt.OverflowUint(uint64(i)) {
+				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", i, t)
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			if zt.OverflowUint(val.Uint()) {
+				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", val.Uint(), t)
+			}
+		case reflect.Float32, reflect.Float64:
+			f := val.Float()
+			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+				return reflect.Value{}, fmt.Errorf("value %v would be truncated when converted to type %s", f, t)
+			}
+			if f < 0 || f >= math.MaxUint64 || zt.OverflowUint(uint64(f)) {
+				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", f, t)
+			}
+		}
+	case reflect.Float32, reflect.Float64:
+		if val.Kind() == reflect.Float32 || val.Kind() == reflect.Float64 {
+			if zt.OverflowFloat(val.Float()) {
+				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", val.Float(), t)
+			}
+		}
+	}
+	return val.Convert(t), nil
 }
 
 // numericKeyToFloat coerces a map key to float64 for conversion to a numeric
@@ -533,21 +607,33 @@ func (o *ConfigOption[T]) convertEnvValue(envValue string) (T, bool) {
 			if err != nil {
 				return zero, false
 			}
-			return reflect.ValueOf(intVal).Convert(targetType).Interface().(T), true
+			cv, cerr := checkedConvert(reflect.ValueOf(intVal), targetType)
+			if cerr != nil {
+				return zero, false
+			}
+			return cv.Interface().(T), true
 
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			uintVal, err := strconv.ParseUint(envValue, 10, 64)
 			if err != nil {
 				return zero, false
 			}
-			return reflect.ValueOf(uintVal).Convert(targetType).Interface().(T), true
+			cv, cerr := checkedConvert(reflect.ValueOf(uintVal), targetType)
+			if cerr != nil {
+				return zero, false
+			}
+			return cv.Interface().(T), true
 
 		case reflect.Float32, reflect.Float64:
 			floatVal, err := strconv.ParseFloat(envValue, 64)
 			if err != nil {
 				return zero, false
 			}
-			return reflect.ValueOf(floatVal).Convert(targetType).Interface().(T), true
+			cv, cerr := checkedConvert(reflect.ValueOf(floatVal), targetType)
+			if cerr != nil {
+				return zero, false
+			}
+			return cv.Interface().(T), true
 		}
 	}
 

@@ -2,6 +2,7 @@ package base_test
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -840,6 +841,80 @@ func TestSetValueFromStarlarkEdgeCases(t *testing.T) {
 		err = intOpt.SetValueFromStarlark(starlark.String("not a number"))
 		if err == nil {
 			t.Fatal("Expected error for invalid number format, got nil")
+		}
+	})
+}
+
+// TestSetValueFromStarlarkCheckedNumeric verifies numeric conversions are
+// CHECKED (PKG-24): out-of-range narrowing, NaN/Inf, and non-integral float→int
+// are rejected with an error instead of being silently truncated/wrapped — the
+// ecosystem "checked conversions" invariant, mirroring starlight. Covers the
+// scalar, slice-element, map-value, and env-var conversion sites.
+func TestSetValueFromStarlarkCheckedNumeric(t *testing.T) {
+	t.Run("ScalarOutOfRangeRejected", func(t *testing.T) {
+		cases := []struct {
+			name string
+			set  func() error
+		}{
+			{"300->int8", func() error { return base.NewConfigOption(int8(0)).SetValueFromStarlark(starlark.MakeInt(300)) }},
+			{"256->uint8", func() error { return base.NewConfigOption(uint8(0)).SetValueFromStarlark(starlark.MakeInt(256)) }},
+			{"-1->uint8", func() error { return base.NewConfigOption(uint8(0)).SetValueFromStarlark(starlark.MakeInt(-1)) }},
+			{"-1->uint64", func() error { return base.NewConfigOption(uint64(0)).SetValueFromStarlark(starlark.MakeInt(-1)) }},
+			{"NaN->int", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(math.NaN())) }},
+			{"+Inf->int", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(math.Inf(1))) }},
+			{"3.5->int (non-integral)", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(3.5)) }},
+		}
+		for _, c := range cases {
+			if err := c.set(); err == nil {
+				t.Errorf("%s: expected an error (checked conversion), got nil — silent corruption", c.name)
+			}
+		}
+	})
+
+	t.Run("ScalarInRangeAccepted", func(t *testing.T) {
+		o8 := base.NewConfigOption(int8(0))
+		if err := o8.SetValueFromStarlark(starlark.MakeInt(100)); err != nil {
+			t.Fatalf("100->int8 should succeed: %v", err)
+		}
+		if v, _ := o8.GetValue(); v != 100 {
+			t.Errorf("int8 = %d, want 100", v)
+		}
+		// An integral float -> int is allowed (3.0 == trunc(3.0)).
+		oi := base.NewConfigOption(0)
+		if err := oi.SetValueFromStarlark(starlark.Float(3.0)); err != nil {
+			t.Fatalf("3.0->int should succeed: %v", err)
+		}
+		if v, _ := oi.GetValue(); v != 3 {
+			t.Errorf("int = %d, want 3", v)
+		}
+	})
+
+	t.Run("SliceElementOutOfRangeRejected", func(t *testing.T) {
+		opt := base.NewConfigOption([]int8{})
+		list := starlark.NewList([]starlark.Value{starlark.MakeInt(1), starlark.MakeInt(300)})
+		if err := opt.SetValueFromStarlark(list); err == nil {
+			t.Error("[]int8 from [1,300]: expected error on the 300 element, got nil")
+		}
+	})
+
+	t.Run("MapValueOutOfRangeRejected", func(t *testing.T) {
+		opt := base.NewConfigOption(map[string]int8{})
+		dict := starlark.NewDict(1)
+		_ = dict.SetKey(starlark.String("a"), starlark.MakeInt(300))
+		if err := opt.SetValueFromStarlark(dict); err == nil {
+			t.Error("map[string]int8 from {a:300}: expected error, got nil")
+		}
+	})
+
+	t.Run("EnvOutOfRangeIgnoredNotCorrupted", func(t *testing.T) {
+		t.Setenv("BASE_TEST_I8", "9999") // 9999 & 0xFF == 15 if silently narrowed
+		opt := base.NewConfigOption(int8(0)).WithEnvVar("BASE_TEST_I8").WithDefault(int8(7))
+		v, err := opt.GetValue()
+		if err != nil {
+			t.Fatalf("GetValue: %v", err)
+		}
+		if v != 7 {
+			t.Errorf("env int8 = %d, want 7 (out-of-range env must fall to default, not be narrowed to 15)", v)
 		}
 	})
 }
