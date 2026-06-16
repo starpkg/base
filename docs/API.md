@@ -49,7 +49,10 @@ immediately for subsequent reads.
 - `value`: the new value for the option. It is converted from Starlark to Go via
   `dataconv.Unmarshal`, then coerced to match the option's declared Go type:
   - numeric scalars are converted between numeric kinds (e.g. a Starlark int into
-    a Go `int64`/`float64` option);
+    a Go `int64`/`float64` option). The conversion is **checked**: a value that
+    would overflow the target (e.g. `300` into an `int8`), a negative value into
+    an unsigned option, `NaN`/`Inf`, or a non-integral float into an integer
+    option is **rejected with an error**, never silently truncated or wrapped;
   - lists are converted element-by-element into the target slice type;
   - dicts are converted into the target map type (numeric map keys, which
     `dataconv` renders as decimal strings, are parsed back to the numeric key
@@ -62,6 +65,9 @@ immediately for subsequent reads.
 
 - the value is `None`/`nil` (a `None` cannot populate a typed option);
 - the value's type cannot be converted to the option's type (type mismatch);
+- a numeric value is out of range for the target (overflow), negative into an
+  unsigned option, `NaN`/`Inf`, or a non-integral float into an integer option
+  (checked conversion — no silent truncation/wrapping);
 - a slice element or map key/value cannot be converted to the target element type;
 - the option has a validator and the converted value fails it.
 
