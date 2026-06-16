@@ -863,6 +863,11 @@ func TestSetValueFromStarlarkCheckedNumeric(t *testing.T) {
 			{"NaN->int", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(math.NaN())) }},
 			{"+Inf->int", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(math.Inf(1))) }},
 			{"3.5->int (non-integral)", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(3.5)) }},
+			{"1e300->int (huge integral)", func() error { return base.NewConfigOption(0).SetValueFromStarlark(starlark.Float(1e300)) }},
+			{"-1.0->uint8", func() error { return base.NewConfigOption(uint8(0)).SetValueFromStarlark(starlark.Float(-1.0)) }},
+			{"300.0->uint8", func() error { return base.NewConfigOption(uint8(0)).SetValueFromStarlark(starlark.Float(300.0)) }},
+			{"NaN->uint8", func() error { return base.NewConfigOption(uint8(0)).SetValueFromStarlark(starlark.Float(math.NaN())) }},
+			{"1e300->float32 (overflow)", func() error { return base.NewConfigOption(float32(0)).SetValueFromStarlark(starlark.Float(1e300)) }},
 		}
 		for _, c := range cases {
 			if err := c.set(); err == nil {
@@ -886,6 +891,22 @@ func TestSetValueFromStarlarkCheckedNumeric(t *testing.T) {
 		}
 		if v, _ := oi.GetValue(); v != 3 {
 			t.Errorf("int = %d, want 3", v)
+		}
+		// An integral float into an unsigned option is allowed.
+		ou := base.NewConfigOption(uint8(0))
+		if err := ou.SetValueFromStarlark(starlark.Float(3.0)); err != nil {
+			t.Fatalf("3.0->uint8 should succeed: %v", err)
+		}
+		if v, _ := ou.GetValue(); v != 3 {
+			t.Errorf("uint8 = %d, want 3", v)
+		}
+		// An in-range float into a float32 option is allowed (precision loss is OK).
+		of := base.NewConfigOption(float32(0))
+		if err := of.SetValueFromStarlark(starlark.Float(1.5)); err != nil {
+			t.Fatalf("1.5->float32 should succeed: %v", err)
+		}
+		if v, _ := of.GetValue(); v != 1.5 {
+			t.Errorf("float32 = %v, want 1.5", v)
 		}
 	})
 

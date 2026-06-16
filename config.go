@@ -425,13 +425,17 @@ func isNumericType(t reflect.Type) bool {
 }
 
 // checkedConvert converts val to type t, but — unlike a bare reflect.Convert —
-// REJECTS conversions that would silently corrupt the value: integer narrowing
-// that overflows the target, a negative value into an unsigned target, NaN/Inf
-// or a non-integral float into an integer, and a float that overflows the
-// target float. This mirrors starlight's convert.checkedConvert so a config
-// value set from a script (or env) can never be silently truncated/wrapped
-// (the ecosystem "checked conversions" invariant). Non-numeric conversions are
-// passed through unchanged.
+// REJECTS a numeric conversion that would silently corrupt the value: integer
+// narrowing that overflows the target, a negative value into an unsigned
+// target, NaN/Inf or a non-integral float into an integer, and a float that
+// overflows the target float. This is the base analog of starlight's
+// convert.checkedConvert (the ecosystem "checked conversions" invariant), so a
+// config value set from a script (or env) can never be silently truncated or
+// wrapped. Non-numeric conversions pass through unchanged.
+//
+// Sources here always come from dataconv.Unmarshal, which yields a signed Go
+// int / int64 or a float64 for a Starlark number (never an unsigned Go int), so
+// only signed-int and float source kinds are range-checked.
 func checkedConvert(val reflect.Value, t reflect.Type) (reflect.Value, error) {
 	if val.Type().AssignableTo(t) {
 		return val, nil
@@ -439,56 +443,85 @@ func checkedConvert(val reflect.Value, t reflect.Type) (reflect.Value, error) {
 	if !val.Type().ConvertibleTo(t) {
 		return reflect.Value{}, fmt.Errorf("value of type %s cannot be converted to type %s", val.Type(), t)
 	}
+	if err := checkNumericRange(val, t); err != nil {
+		return reflect.Value{}, err
+	}
+	return val.Convert(t), nil
+}
+
+// checkNumericRange returns an error if converting val to the numeric type t
+// would lose information; it is a no-op for non-numeric targets.
+func checkNumericRange(val reflect.Value, t reflect.Type) error {
 	zt := reflect.Zero(t)
 	switch t.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		switch val.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if zt.OverflowInt(val.Int()) {
-				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", val.Int(), t)
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			u := val.Uint()
-			if u > math.MaxInt64 || zt.OverflowInt(int64(u)) {
-				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", u, t)
-			}
-		case reflect.Float32, reflect.Float64:
-			f := val.Float()
-			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
-				return reflect.Value{}, fmt.Errorf("value %v would be truncated when converted to type %s", f, t)
-			}
-			if f < math.MinInt64 || f >= math.MaxInt64 || zt.OverflowInt(int64(f)) {
-				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", f, t)
-			}
-		}
+		return checkToInt(val, zt, t)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		switch val.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			i := val.Int()
-			if i < 0 || zt.OverflowUint(uint64(i)) {
-				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", i, t)
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if zt.OverflowUint(val.Uint()) {
-				return reflect.Value{}, fmt.Errorf("value %d out of range for type %s", val.Uint(), t)
-			}
-		case reflect.Float32, reflect.Float64:
-			f := val.Float()
-			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
-				return reflect.Value{}, fmt.Errorf("value %v would be truncated when converted to type %s", f, t)
-			}
-			if f < 0 || f >= math.MaxUint64 || zt.OverflowUint(uint64(f)) {
-				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", f, t)
-			}
-		}
+		return checkToUint(val, zt, t)
 	case reflect.Float32, reflect.Float64:
-		if val.Kind() == reflect.Float32 || val.Kind() == reflect.Float64 {
-			if zt.OverflowFloat(val.Float()) {
-				return reflect.Value{}, fmt.Errorf("value %v out of range for type %s", val.Float(), t)
-			}
+		if isFloatKind(val.Kind()) && zt.OverflowFloat(val.Float()) {
+			return fmt.Errorf("value %v out of range for type %s", val.Float(), t)
 		}
 	}
-	return val.Convert(t), nil
+	return nil
+}
+
+func checkToInt(val, zt reflect.Value, t reflect.Type) error {
+	switch val.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if zt.OverflowInt(val.Int()) {
+			return fmt.Errorf("value %d out of range for type %s", val.Int(), t)
+		}
+	case reflect.Float32, reflect.Float64:
+		return checkFloatToInt(val.Float(), zt, t)
+	}
+	return nil
+}
+
+func checkToUint(val, zt reflect.Value, t reflect.Type) error {
+	switch val.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i := val.Int()
+		if i < 0 || zt.OverflowUint(uint64(i)) {
+			return fmt.Errorf("value %d out of range for type %s", i, t)
+		}
+	case reflect.Float32, reflect.Float64:
+		return checkFloatToUint(val.Float(), zt, t)
+	}
+	return nil
+}
+
+func checkFloatToInt(f float64, zt reflect.Value, t reflect.Type) error {
+	if err := floatIntegral(f, t); err != nil {
+		return err
+	}
+	if f < math.MinInt64 || f >= math.MaxInt64 || zt.OverflowInt(int64(f)) {
+		return fmt.Errorf("value %v out of range for type %s", f, t)
+	}
+	return nil
+}
+
+func checkFloatToUint(f float64, zt reflect.Value, t reflect.Type) error {
+	if err := floatIntegral(f, t); err != nil {
+		return err
+	}
+	if f < 0 || f >= math.MaxUint64 || zt.OverflowUint(uint64(f)) {
+		return fmt.Errorf("value %v out of range for type %s", f, t)
+	}
+	return nil
+}
+
+// floatIntegral rejects a float that cannot become an integer without loss
+// (NaN, Inf, or a fractional value).
+func floatIntegral(f float64, t reflect.Type) error {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+		return fmt.Errorf("value %v would be truncated when converted to type %s", f, t)
+	}
+	return nil
+}
+
+func isFloatKind(k reflect.Kind) bool {
+	return k == reflect.Float32 || k == reflect.Float64
 }
 
 // numericKeyToFloat coerces a map key to float64 for conversion to a numeric
