@@ -17,6 +17,7 @@ type ConfigOptionInterface interface {
 	SetName(name string)
 	IsRequired() bool
 	IsSecret() bool
+	IsHostOnly() bool
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
@@ -192,7 +193,11 @@ func (m *ConfigurableModule) LoadModule(moduleName string, additionalFuncs starl
 		// Add config setters and getters
 		sd := make(starlark.StringDict, len(m.configs)*2+len(additionalFuncs))
 		for name, option := range m.configs {
-			sd["set_"+name] = m.generateSetBuiltin(name, option)
+			// Host-only options get no set_<name>: a script must not be able to
+			// change a safety/resource limit the module enforces against it.
+			if !option.IsHostOnly() {
+				sd["set_"+name] = m.generateSetBuiltin(name, option)
+			}
 			// Don't expose getters for secret values in Starlark
 			if !option.IsSecret() {
 				sd["get_"+name] = m.generateGetBuiltin(name, option)

@@ -47,6 +47,7 @@ type ConfigOption[T any] struct {
 	validator  ConfigValidator[T]
 	isRequired bool
 	isSecret   bool
+	isHostOnly bool
 }
 
 // NewConfigOption creates a new configuration option with the given default value.
@@ -140,6 +141,21 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 	return o
 }
 
+// SetHostOnly sets whether the configuration option is host-only. A host-only
+// option is NOT exposed to Starlark as a set_<name> builtin, so a script cannot
+// change it; the host still configures it in Go and (unless it is also secret)
+// a get_<name> builtin still lets a script read it. This is for safety- or
+// resource-sensitive limits — e.g. a maximum input size — that a module must be
+// able to enforce against untrusted scripts, which a script-settable option
+// cannot do (it could just raise or zero the limit). Defaults to false, so
+// existing options remain script-settable exactly as before.
+func (o *ConfigOption[T]) SetHostOnly(hostOnly bool) *ConfigOption[T] {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.isHostOnly = hostOnly
+	return o
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Accessors and Mutators
 //////////////////////////////////////////////////////////////////////////
@@ -224,6 +240,14 @@ func (o *ConfigOption[T]) IsSecret() bool {
 	return o.isSecret
 }
 
+// IsHostOnly returns whether the configuration option is host-only (not exposed
+// to Starlark as a set_<name> builtin). See SetHostOnly.
+func (o *ConfigOption[T]) IsHostOnly() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.isHostOnly
+}
+
 // HasValue returns whether the configuration option has a value set.
 func (o *ConfigOption[T]) HasValue() bool {
 	o.mu.RLock()
@@ -264,6 +288,7 @@ func (o *ConfigOption[T]) GetInfo() map[string]interface{} {
 		"env_var":     o.EnvVar,
 		"required":    o.isRequired,
 		"secret":      o.isSecret,
+		"host_only":   o.isHostOnly,
 		"has_value":   o.hasValue,
 		"has_getter":  o.getter != nil,
 		"has_env_var": o.EnvVar != "",
@@ -329,12 +354,12 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 				continue
 			}
 
-			// Try direct conversion
-			if srcElemType.ConvertibleTo(elemType) {
-				destSlice.Index(i).Set(reflect.ValueOf(srcElem).Convert(elemType))
-			} else {
-				return fmt.Errorf("element at index %d cannot be converted from %v to %v", i, srcElemType, elemType)
+			// Try direct conversion (checked: reject int->string code-point casts)
+			cv, cerr := checkedElemConvert(reflect.ValueOf(srcElem), elemType)
+			if cerr != nil {
+				return fmt.Errorf("element at index %d cannot be converted from %v to %v: %v", i, srcElemType, elemType, cerr)
 			}
+			destSlice.Index(i).Set(cv)
 		}
 
 		return o.SetValue(destSlice.Interface().(T))
@@ -354,24 +379,35 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 			srcValueType := reflect.TypeOf(srcValue)
 
 			// dataconv.Unmarshal renders every dict key as its decimal string
-			// (e.g. "1", "1.5"), so a numeric target key now arrives as a
-			// string: parse it. Other source kinds still convert directly.
-			// Note: map KEYS keep the historical plain-convert semantics (their
-			// dict-key-stringification path has its own established behaviour and
-			// tests); the checked-conversion hardening (PKG-24) targets scalar,
-			// slice-element, and map-VALUE numeric narrowing, which is where the
-			// silent-corruption bug was found.
+			// (e.g. "1", "1.5"), so a numeric target key arrives as a string:
+			// parse it to a float64, then convert CHECKED — the same bar as map
+			// values and slice elements. A fractional key into an integer target
+			// (1.5 -> int) or an out-of-range key (256 -> uint8) is rejected, not
+			// silently truncated/wrapped. (Float precision loss into a float
+			// target is accepted, matching the ecosystem's checked-conversion
+			// invariant, which errors on overflow/narrowing/code-point only.)
 			var destKey reflect.Value
 			if isNumericType(keyType) {
-				if f, ok := numericKeyToFloat(srcKey); ok && reflect.TypeOf(f).ConvertibleTo(keyType) {
-					destKey = reflect.ValueOf(f).Convert(keyType)
-				} else {
+				kv, ok := numericKeyValue(srcKey, keyType)
+				if !ok || !kv.Type().ConvertibleTo(keyType) {
+					// non-numeric key, or a numeric key whose type cannot reach the
+					// target at all (e.g. a real key into a complex target)
 					return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
 				}
-			} else if srcKeyType.ConvertibleTo(keyType) {
-				destKey = reflect.ValueOf(srcKey).Convert(keyType)
+				ck, cerr := checkedConvert(kv, keyType)
+				if cerr != nil {
+					return fmt.Errorf("map key %v cannot be converted to %v: %v", kv.Interface(), keyType, cerr)
+				}
+				destKey = ck
 			} else {
-				return fmt.Errorf("map key cannot be converted from %v to %v", srcKeyType, keyType)
+				// checked: reject int->string code-point casts (keys arrive as
+				// decimal strings from dataconv, so this normally converts
+				// string->string, but guard the general case)
+				ck, cerr := checkedElemConvert(reflect.ValueOf(srcKey), keyType)
+				if cerr != nil {
+					return fmt.Errorf("map key cannot be converted from %v to %v: %v", srcKeyType, keyType, cerr)
+				}
+				destKey = ck
 			}
 
 			// Try to convert numeric types for values (checked: reject silent narrowing/overflow)
@@ -382,12 +418,21 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 					return fmt.Errorf("map value: %v", cerr)
 				}
 				destValue = cv
-			} else if srcValueType.ConvertibleTo(valueType) {
-				destValue = reflect.ValueOf(srcValue).Convert(valueType)
 			} else {
-				return fmt.Errorf("map value cannot be converted from %v to %v", srcValueType, valueType)
+				// checked: reject int->string code-point casts
+				cvv, cerr := checkedElemConvert(reflect.ValueOf(srcValue), valueType)
+				if cerr != nil {
+					return fmt.Errorf("map value cannot be converted from %v to %v: %v", srcValueType, valueType, cerr)
+				}
+				destValue = cvv
 			}
 
+			// Two distinct source keys can convert to the same destination key
+			// (e.g. int 1 and float 1.0, or "1" and "1.0"); silently overwriting
+			// would drop an entry, so reject the collision instead.
+			if destMap.MapIndex(destKey).IsValid() {
+				return fmt.Errorf("map key %v collides with an earlier key after conversion to %v", destKey, keyType)
+			}
 			destMap.SetMapIndex(destKey, destValue)
 		}
 
@@ -417,11 +462,42 @@ func (o *ConfigOption[T]) SetValueFromStarlark(v starlark.Value) (err error) {
 func isNumericType(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
 		return true
 	}
 	return false
+}
+
+// isIntegerKind reports whether k is a Go integer kind. Go permits a bare
+// reflect.Convert of an integer to a string, which it performs as a Unicode
+// code-point cast (int(65) -> "A"), not a decimal rendering. Uintptr is an
+// integer kind and converts the same way, so it must be listed too.
+func isIntegerKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	}
+	return false
+}
+
+// checkedElemConvert converts src to destType for a slice element or a map
+// key/value, but — unlike a bare reflect.Convert — REJECTS an integer→string
+// conversion. Go performs that as a silent Unicode code-point cast (int(65) ->
+// "A"), so a script that set, say, a []string allowlist from a list of integers
+// would get code-point strings instead of a loud error. This is the collection
+// analog of the ecosystem "int->string must be explicit" invariant (the numeric
+// narrowing case is handled by checkedConvert). Other convertible pairs pass
+// through unchanged.
+func checkedElemConvert(src reflect.Value, destType reflect.Type) (reflect.Value, error) {
+	if destType.Kind() == reflect.String && isIntegerKind(src.Kind()) {
+		return reflect.Value{}, fmt.Errorf("refusing to convert integer %v to string as a Unicode code point; provide a string instead", src.Interface())
+	}
+	if !src.Type().ConvertibleTo(destType) {
+		return reflect.Value{}, fmt.Errorf("cannot convert %v to %v", src.Type(), destType)
+	}
+	return src.Convert(destType), nil
 }
 
 // checkedConvert converts val to type t, but — unlike a bare reflect.Convert —
@@ -472,6 +548,10 @@ func checkToInt(val, zt reflect.Value, t reflect.Type) error {
 		if zt.OverflowInt(val.Int()) {
 			return fmt.Errorf("value %d out of range for type %s", val.Int(), t)
 		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if u := val.Uint(); u > math.MaxInt64 || zt.OverflowInt(int64(u)) {
+			return fmt.Errorf("value %d out of range for type %s", u, t)
+		}
 	case reflect.Float32, reflect.Float64:
 		return checkFloatToInt(val.Float(), zt, t)
 	}
@@ -484,6 +564,10 @@ func checkToUint(val, zt reflect.Value, t reflect.Type) error {
 		i := val.Int()
 		if i < 0 || zt.OverflowUint(uint64(i)) {
 			return fmt.Errorf("value %d out of range for type %s", i, t)
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if u := val.Uint(); zt.OverflowUint(u) {
+			return fmt.Errorf("value %d out of range for type %s", u, t)
 		}
 	case reflect.Float32, reflect.Float64:
 		return checkFloatToUint(val.Float(), zt, t)
@@ -524,24 +608,44 @@ func isFloatKind(k reflect.Kind) bool {
 	return k == reflect.Float32 || k == reflect.Float64
 }
 
-// numericKeyToFloat coerces a map key to float64 for conversion to a numeric
-// key type. dataconv.Unmarshal renders dict keys as decimal strings, so the
-// common case is a string parse; already-numeric keys are accepted too.
-func numericKeyToFloat(k interface{}) (float64, bool) {
+// numericKeyValue parses a map key into the most precise Go numeric value for a
+// numeric target key type, WITHOUT a float64 round-trip. dataconv.Unmarshal
+// renders dict keys as decimal strings, so the common case is a string parse: an
+// integer string parses to int64/uint64 EXACTLY (a float64 bridge would corrupt
+// a key beyond float64's 53-bit exact-integer range, e.g. 2^53+1), and only a
+// genuinely fractional key falls back to float64. Already-numeric keys (from a
+// host-wrapped Go map) are used as-is. The caller then range/integrality-checks
+// via checkedConvert.
+func numericKeyValue(k interface{}, keyType reflect.Type) (reflect.Value, bool) {
 	if s, ok := k.(string); ok {
-		f, err := strconv.ParseFloat(s, 64)
-		return f, err == nil
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return reflect.ValueOf(i), true
+		}
+		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return reflect.ValueOf(u), true
+		}
+		// An integer-formatted key outside [MinInt64, MaxUint64] cannot be
+		// represented exactly by any 64-bit integer target; float-parsing it
+		// would ROUND it and silently change the key's identity (e.g. MinInt64-1
+		// -> MinInt64). Reject it for an integer target — only a float target
+		// accepts it, as ordinary float precision loss, and only a genuinely
+		// fractional/exponent key floats.
+		if !strings.ContainsAny(s, ".eE") && !isFloatKind(keyType.Kind()) {
+			return reflect.Value{}, false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return reflect.ValueOf(f), true
+		}
+		return reflect.Value{}, false
 	}
 	rv := reflect.ValueOf(k)
 	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(rv.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return float64(rv.Uint()), true
-	case reflect.Float32, reflect.Float64:
-		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		return rv, true
 	}
-	return 0, false
+	return reflect.Value{}, false
 }
 
 // GetStarlarkValue returns the configuration value as a starlark value.
