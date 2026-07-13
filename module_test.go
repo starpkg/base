@@ -1998,3 +1998,45 @@ func TestLoadModuleInitFailureReturnsError(t *testing.T) {
 		t.Error("valid module loaded an empty dict")
 	}
 }
+
+// TestLoadModule_HostOnlyOption: a host-only option gets a get_<name> builtin
+// (reading the limit is fine) but NO set_<name> — a script must not be able to
+// change a limit the module enforces against it. A normal option keeps both.
+func TestLoadModule_HostOnlyOption(t *testing.T) {
+	newEnv := func() *starlet.Machine {
+		module := base.NewConfigurableModule()
+		if err := module.SetConfigOption("normal", base.NewConfigOption("v").WithName("normal")); err != nil {
+			t.Fatal(err)
+		}
+		if err := module.SetConfigOption("limit", base.NewConfigOption(1024).WithName("limit").SetHostOnly(true)); err != nil {
+			t.Fatal(err)
+		}
+		// host-only AND secret: neither set_ (host-only) nor get_ (secret).
+		if err := module.SetConfigOption("token", base.NewConfigOption("t").WithName("token").SetHostOnly(true).SetSecret(true)); err != nil {
+			t.Fatal(err)
+		}
+		env := starlet.NewDefault()
+		env.SetLazyloadModules(map[string]starlet.ModuleLoader{"cfg": module.LoadModule("cfg", nil)})
+		return env
+	}
+
+	// get_limit (read) and set_normal are exposed and usable.
+	if _, err := newEnv().RunScript([]byte(`
+load("cfg", "get_limit", "set_normal")
+v = get_limit()
+set_normal("x")
+`), nil); err != nil {
+		t.Fatalf("get_limit and set_normal should be available: %v", err)
+	}
+
+	// each of these must be absent — loading it must fail.
+	for _, absent := range []string{
+		"set_limit", // host-only: no setter
+		"set_token", // host-only: no setter
+		"get_token", // secret: no getter
+	} {
+		if _, err := newEnv().RunScript([]byte(`load("cfg", "`+absent+`")`), nil); err == nil {
+			t.Errorf("%s must not be exposed", absent)
+		}
+	}
+}

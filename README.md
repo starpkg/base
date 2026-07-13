@@ -26,7 +26,7 @@ It provides:
   from a script.
 - **Environment-variable integration**, with automatic string-to-type parsing.
 - **Automatic Starlark wiring**: `LoadModule` generates a `set_<key>` setter for
-  every option and a `get_<key>` getter for every non-secret option.
+  every non-host-only option and a `get_<key>` getter for every non-secret option.
 
 `base` is an L4 `starpkg` module that depends downward on `1set/starlet` (the
 Machine plus `dataconv`) and transitively on `1set/starlight` plus
@@ -69,6 +69,13 @@ func main() {
         base.NewConfigOption("https://api.example.com").
             WithEnvVar("API_ENDPOINT"))
 
+    // A host-only limit: the host enforces it, so a script may read it
+    // (get_max_bytes) but cannot change it — no set_max_bytes is generated.
+    module.SetConfigOption("max_bytes",
+        base.NewConfigOption(1<<20).
+            WithDescription("maximum input size the module accepts").
+            SetHostOnly(true))
+
     loader := module.LoadModule("mymodule", nil)
 
     machine := starlet.NewDefault()
@@ -96,7 +103,8 @@ script surface from the options a host registers, so the accessor names depend o
 the config keys:
 
 - `set_<key>(value)` — set option `<key>` (highest-priority source); returns
-  `None`. Generated for **every** option, secret or not.
+  `None`. Generated for every **non-host-only** option (secret or not); a
+  host-only option has no setter.
 - `get_<key>()` — return the resolved value of non-secret option `<key>`.
   Generated for **non-secret options only** — a secret option exposes its setter
   but no getter.
@@ -108,10 +116,12 @@ errors, and examples of every generated accessor.
 
 ## Configuration
 
-Each option becomes a `set_<key>` setter (and a `get_<key>` getter when not
-secret); a value resolves in priority order — explicit `set_<key>` → getter →
-environment variable (`WithEnvVar`, conventionally `<MODULE>_<KEY>`) → default.
-Secret options expose only `set_<key>`, never a getter. See the
+Each option becomes a `set_<key>` setter (unless it is host-only) and a
+`get_<key>` getter (unless it is secret); a value resolves in priority order —
+explicit `set_<key>` → getter → environment variable (`WithEnvVar`,
+conventionally `<MODULE>_<KEY>`) → default. Secret options expose only
+`set_<key>`, never a getter; host-only options (`SetHostOnly(true)`, for a limit
+the module enforces) expose only `get_<key>`, never a setter. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
 accessor contract and conversion rules.
 

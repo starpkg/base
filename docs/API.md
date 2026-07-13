@@ -9,9 +9,10 @@ quickstart, see the [README](../README.md).
 `LoadModule(moduleName, additionalFuncs)` derives the script-facing surface from
 the configuration options a host registered, so the exact function names depend
 on the module's config keys. For every registered option named `<name>` the
-loader generates a `set_<name>` setter, and for every **non-secret** option a
-`get_<name>` getter; any callables passed in `additionalFuncs` are merged in
-alongside under their own names.
+loader generates a `set_<name>` setter — **unless the option is host-only**, in
+which case no setter is generated so a script cannot change it — and for every
+**non-secret** option a `get_<name>` getter; any callables passed in
+`additionalFuncs` are merged in alongside under their own names.
 
 ## Contents
 
@@ -28,14 +29,16 @@ When a `ConfigurableModule` is loaded with `LoadModule(moduleName, …)`, each
 registered option contributes one or two builtins to the module namespace, named
 by string concatenation from the option's key:
 
-| Generated builtin | Generated for           | Signature           |
-|-------------------|-------------------------|---------------------|
-| `set_<name>`      | every option            | `set_<name>(value)` |
-| `get_<name>`      | non-secret options only | `get_<name>()`      |
+| Generated builtin | Generated for              | Signature           |
+|-------------------|----------------------------|---------------------|
+| `set_<name>`      | non-host-only options only  | `set_<name>(value)` |
+| `get_<name>`      | non-secret options only    | `get_<name>()`      |
 
 So a module with options `api_key` (secret) and `endpoint` (non-secret) exposes
 exactly `set_api_key`, `set_endpoint`, and `get_endpoint` — a setter for every
-option and a getter for every non-secret option.
+non-host-only option and a getter for every non-secret option. A **host-only**
+option (e.g. a limit the module enforces) gets a `get_<name>` but no
+`set_<name>`, so a script can read it but never change it.
 
 ### `set_<name>(value)`
 
@@ -164,7 +167,7 @@ registers, following one uniform contract:
 - **`get_<key>()`** — returns the option's current value. Generated for
   **non-secret** options only.
 - **`set_<key>(value)`** — sets the option (returns `None`). Generated for
-  **every** option, secret or not.
+  every **non-host-only** option (secret or not); a host-only option has none.
 
 A `<key>`'s value resolves in priority order — an explicit `set_<key>` value, the
 option's getter, the environment variable, then the default. The environment
@@ -178,10 +181,13 @@ var is host-chosen via `WithEnvVar` (conventionally `<MODULE>_<KEY>`), and the
 default/description are whatever the host declared (`WithDefault` /
 `NewConfigOption`, `WithDescription`).
 
-- **`<key>` (non-secret)** — getter `get_<key>`, setter `set_<key>`; both value
+- **`<key>` (plain)** — getter `get_<key>`, setter `set_<key>`; both value
   reads and writes are reachable from a script.
 - **`<key>` (secret)** — setter `set_<key>` only; no getter is generated, since
   secrets are never readable from a script.
+- **`<key>` (host-only)** — getter `get_<key>` only; no setter is generated, so a
+  script can read the value but never change it (a limit the module enforces). A
+  host-only **and** secret option gets neither accessor.
 
 **Secret options expose only `set_<key>` — never a getter.** A host marks an
 option secret with `SetSecret(true)` (or the equivalent `genSecretConfigOption`

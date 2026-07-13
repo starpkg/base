@@ -3,11 +3,13 @@ package base_test
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/1set/starlet"
+	"github.com/1set/starlight/convert"
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
 )
@@ -1014,24 +1016,15 @@ func TestMapKeyConversion(t *testing.T) {
 			t.Errorf("Expected map with 2 keys and correct values, got %v", intVal)
 		}
 
-		// Conversion that should fail: float with fraction to int
+		// A fractional float key into an integer target must be REJECTED, not
+		// silently truncated (1.5 -> 1) — the map-key path is now checked like
+		// map values and slice elements.
 		floatFracDict := starlark.NewDict(1)
 		floatFracDict.SetKey(starlark.Float(1.5), starlark.String("one point five"))
 
-		// This should still succeed since floats can be converted to ints (truncated)
-		err = intMapOpt.SetValueFromStarlark(floatFracDict)
-		if err != nil {
-			t.Fatalf("SetValueFromStarlark failed for truncated float: %v", err)
-		}
-
-		// Key should be truncated to 1
-		intVal, err = intMapOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-
-		if len(intVal) != 1 || intVal[1] != "one point five" {
-			t.Errorf("Expected map with truncated float key, got %v", intVal)
+		if err := intMapOpt.SetValueFromStarlark(floatFracDict); err == nil {
+			v, _ := intMapOpt.GetValue()
+			t.Errorf("expected an error for a fractional float key into map[int], got %v", v)
 		}
 	})
 
@@ -1062,25 +1055,14 @@ func TestMapKeyConversion(t *testing.T) {
 			t.Errorf("Expected map with converted keys, got %v", uintVal)
 		}
 
-		// Test overflow case (should error)
+		// An out-of-range key must be REJECTED, not silently wrapped: 256 into a
+		// uint8 key used to wrap to 0. The checked key conversion now errors.
 		overflowDict := starlark.NewDict(1)
 		overflowDict.SetKey(starlark.MakeInt(256), starlark.String("overflow"))
 
-		// This will actually succeed on most systems as the int256 will fit in a uint8
-		// due to type conversion mechanics in Go, but will wrap around to 0
-		err = uintMapOpt.SetValueFromStarlark(overflowDict)
-		if err != nil {
-			t.Fatalf("SetValueFromStarlark failed unexpectedly: %v", err)
-		}
-
-		uintVal, err = uintMapOpt.GetValue()
-		if err != nil {
-			t.Fatalf("GetValue failed: %v", err)
-		}
-
-		// 256 should wrap around to 0 for uint8
-		if len(uintVal) != 1 || uintVal[0] != "overflow" {
-			t.Errorf("Expected map with wrapped key, got %v", uintVal)
+		if err := uintMapOpt.SetValueFromStarlark(overflowDict); err == nil {
+			v, _ := uintMapOpt.GetValue()
+			t.Errorf("expected an error for a key 256 overflowing uint8, got %v", v)
 		}
 	})
 
@@ -1167,4 +1149,133 @@ func TestSetValueFromStarlarkNoneRejected(t *testing.T) {
 	check("bool", func() error { return base.NewConfigOption(false).SetValueFromStarlark(starlark.None) })
 	check("slice", func() error { return base.NewConfigOption([]int{}).SetValueFromStarlark(starlark.None) })
 	check("map", func() error { return base.NewConfigOption(map[string]int{}).SetValueFromStarlark(starlark.None) })
+}
+
+// TestSetValueFromStarlark_CodepointGuard: a []string or map[..]string config
+// set from integers must ERROR, not silently convert each int to its Unicode
+// code point (Go's int->string cast renders 65 as "A", not "65"). The bug let a
+// script set, say, a string allowlist from a list of ints and get code-point
+// strings instead of a loud rejection.
+func TestSetValueFromStarlark_CodepointGuard(t *testing.T) {
+	// []string from a list of ints -> error (must not become ["A","B"]).
+	strSlice := base.NewConfigOption([]string{})
+	if err := strSlice.SetValueFromStarlark(starlark.NewList([]starlark.Value{
+		starlark.MakeInt(65), starlark.MakeInt(66),
+	})); err == nil {
+		v, _ := strSlice.GetValue()
+		t.Errorf("expected an error setting []string from ints, got value %v", v)
+	}
+
+	// map[string]string from a dict with int values -> error.
+	strMap := base.NewConfigOption(map[string]string{})
+	d := starlark.NewDict(1)
+	_ = d.SetKey(starlark.String("k"), starlark.MakeInt(65))
+	if err := strMap.SetValueFromStarlark(d); err == nil {
+		v, _ := strMap.GetValue()
+		t.Errorf("expected an error setting map[string]string from int values, got %v", v)
+	}
+
+	// uintptr is an integer kind too: a host-wrapped []interface{}{uintptr(65)}
+	// reaching a []string target must also be rejected, not code-point cast.
+	uintSlice := base.NewConfigOption([]string{})
+	if err := uintSlice.SetValueFromStarlark(
+		convert.NewGoSlice([]interface{}{uintptr(65), uintptr(66)})); err == nil {
+		v, _ := uintSlice.GetValue()
+		t.Errorf("expected an error setting []string from uintptr values, got %v", v)
+	}
+
+	// sanity: a genuine []string from strings still works unchanged.
+	okSlice := base.NewConfigOption([]string{})
+	if err := okSlice.SetValueFromStarlark(starlark.NewList([]starlark.Value{
+		starlark.String("a"), starlark.String("b"),
+	})); err != nil {
+		t.Fatalf("[]string from strings should work: %v", err)
+	}
+	if v, _ := okSlice.GetValue(); len(v) != 2 || v[0] != "a" || v[1] != "b" {
+		t.Errorf("expected [a b], got %v", v)
+	}
+
+	// sanity: []int from ints still works (the numeric element path is untouched).
+	okInts := base.NewConfigOption([]int{})
+	if err := okInts.SetValueFromStarlark(starlark.NewList([]starlark.Value{
+		starlark.MakeInt(1), starlark.MakeInt(2),
+	})); err != nil {
+		t.Fatalf("[]int from ints should work: %v", err)
+	}
+
+	// a large integer key must keep its exact identity: routing it through
+	// float64 corrupted keys beyond float64's 53-bit exact range (2^53+1 ->
+	// 2^53). The key path parses integer keys exactly now.
+	bigKeyOpt := base.NewConfigOption(map[int64]string{})
+	bigDict := starlark.NewDict(1)
+	_ = bigDict.SetKey(starlark.MakeInt64(9007199254740993), starlark.String("x")) // 2^53+1
+	if err := bigKeyOpt.SetValueFromStarlark(bigDict); err != nil {
+		t.Fatalf("a large int key should convert exactly: %v", err)
+	}
+	if v, _ := bigKeyOpt.GetValue(); v[9007199254740993] != "x" {
+		t.Errorf("large int key 2^53+1 was corrupted: got %v", v)
+	}
+	// an integer key OUTSIDE [MinInt64, MaxUint64] cannot be represented exactly
+	// by an integer target, so it must error rather than be float-rounded into a
+	// nearby representable key (MinInt64-1 used to round to MinInt64 silently).
+	tooSmall, _ := big.NewInt(0).SetString("-9223372036854775809", 10) // MinInt64 - 1
+	tooSmallDict := starlark.NewDict(1)
+	_ = tooSmallDict.SetKey(starlark.MakeBigInt(tooSmall), starlark.String("x"))
+	if err := base.NewConfigOption(map[int64]string{}).SetValueFromStarlark(tooSmallDict); err == nil {
+		t.Error("expected an error for an integer key below MinInt64 into map[int64]")
+	}
+	// the same out-of-range integer into a FLOAT key target is accepted (float
+	// keys carry ordinary float precision, and the host chose float64 keys).
+	if err := base.NewConfigOption(map[float64]string{}).SetValueFromStarlark(tooSmallDict); err != nil {
+		t.Errorf("an out-of-range integer key into map[float64] should be accepted: %v", err)
+	}
+
+	// a key above MaxInt64 parses via the unsigned path and stays exact.
+	maxUintKeyOpt := base.NewConfigOption(map[uint64]string{})
+	maxDict := starlark.NewDict(1)
+	_ = maxDict.SetKey(starlark.MakeUint64(18446744073709551615), starlark.String("m")) // MaxUint64
+	if err := maxUintKeyOpt.SetValueFromStarlark(maxDict); err != nil {
+		t.Fatalf("a MaxUint64 key should convert exactly: %v", err)
+	}
+	if v, _ := maxUintKeyOpt.GetValue(); v[18446744073709551615] != "m" {
+		t.Errorf("MaxUint64 key was corrupted: got %v", v)
+	}
+
+	// two distinct source keys that converge on the same target key must be
+	// rejected, not silently overwrite each other (int 1 and float 1.0 both
+	// become int 1). A host-wrapped Go map preserves the distinct Go keys.
+	collideOpt := base.NewConfigOption(map[int]string{})
+	if err := collideOpt.SetValueFromStarlark(
+		convert.NewGoMap(map[interface{}]string{1: "a", 1.0: "b"})); err == nil {
+		v, _ := collideOpt.GetValue()
+		t.Errorf("expected a key-collision error (int 1 and float 1.0 -> 1), got %v", v)
+	}
+
+	// an UNSIGNED source that overflows the target must also be rejected, not
+	// silently truncated: uintptr(300) into a []uint8 element was truncating to
+	// 44 because the range check skipped unsigned sources. (starlet's dataconv
+	// can hand back uint64 for a large Starlark int, so unsigned sources reach
+	// here in practice.)
+	u8 := base.NewConfigOption([]uint8{})
+	if err := u8.SetValueFromStarlark(
+		convert.NewGoSlice([]interface{}{uintptr(300)})); err == nil {
+		v, _ := u8.GetValue()
+		t.Errorf("expected an error narrowing uint 300 to uint8, got %v", v)
+	}
+	// sanity: an in-range unsigned value still works.
+	if err := base.NewConfigOption([]uint8{}).SetValueFromStarlark(
+		convert.NewGoSlice([]interface{}{uintptr(200)})); err != nil {
+		t.Fatalf("in-range uint -> uint8 should work: %v", err)
+	}
+
+	// unsigned source into a SIGNED target is range-checked too: 300 overflows
+	// int8, and a value above MaxInt64 overflows even int64/int.
+	if err := base.NewConfigOption([]int8{}).SetValueFromStarlark(
+		convert.NewGoSlice([]interface{}{uintptr(300)})); err == nil {
+		t.Error("expected an error narrowing uint 300 to int8")
+	}
+	if err := base.NewConfigOption([]int{}).SetValueFromStarlark(
+		convert.NewGoSlice([]interface{}{uint64(math.MaxInt64) + 1})); err == nil {
+		t.Error("expected an error converting a uint above MaxInt64 to int")
+	}
 }
