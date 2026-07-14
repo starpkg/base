@@ -2040,3 +2040,88 @@ set_normal("x")
 		}
 	}
 }
+
+// TestHostOnlyOptionEnvSnapshot: a host-only option must resolve its env value
+// as captured at module-construction time, so an in-script mutation of the
+// process environment (what starlet's runtime.setenv does — a plain os.Setenv)
+// cannot re-widen a limit the module enforces. A normal option stays dynamic.
+func TestHostOnlyOptionEnvSnapshot(t *testing.T) {
+	const envKey = "BASE_TEST_HOSTONLY_CAP"
+
+	t.Run("host-only ignores env mutation after construction", func(t *testing.T) {
+		t.Setenv(envKey, "100")
+		opt := base.NewConfigOption(0).WithName("cap").WithEnvVar(envKey).SetHostOnly(true)
+		m, err := base.NewConfigurableModuleWithConfigOptions(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Simulate runtime.setenv widening the cap at script time.
+		os.Setenv(envKey, "0")
+		got, err := base.GetConfigValue[int](m, "cap")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 100 {
+			t.Fatalf("host-only cap must keep its construction-time value 100, got %d — env mutation re-widened it", got)
+		}
+	})
+
+	t.Run("normal option honors live env mutation", func(t *testing.T) {
+		t.Setenv(envKey, "100")
+		opt := base.NewConfigOption(0).WithName("cap").WithEnvVar(envKey) // not host-only
+		m, err := base.NewConfigurableModuleWithConfigOptions(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Setenv(envKey, "7")
+		got, err := base.GetConfigValue[int](m, "cap")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 7 {
+			t.Fatalf("a non-host-only option should read the live env, got %d", got)
+		}
+	})
+
+	t.Run("late SetHostOnly is snapshotted by the Initialize backstop", func(t *testing.T) {
+		t.Setenv(envKey, "100")
+		opt := base.NewConfigOption(0).WithName("cap").WithEnvVar(envKey) // not host-only yet
+		m, err := base.NewConfigurableModuleWithConfigOptions(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt.SetHostOnly(true) // becomes host-only AFTER registration
+		// Invoking the loader runs Initialize, which backstops the freeze.
+		if _, err := m.LoadModule("cfg", nil)(); err != nil {
+			t.Fatal(err)
+		}
+		os.Setenv(envKey, "0")
+		defer os.Unsetenv(envKey)
+		got, err := base.GetConfigValue[int](m, "cap")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 100 {
+			t.Fatalf("a late-host-only option must be frozen by the Initialize backstop, got %d", got)
+		}
+	})
+
+	t.Run("host-only env added after construction is not picked up", func(t *testing.T) {
+		os.Unsetenv(envKey)
+		opt := base.NewConfigOption(42).WithName("cap").WithEnvVar(envKey).SetHostOnly(true)
+		m, err := base.NewConfigurableModuleWithConfigOptions(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The script sets a var that did not exist at construction — must be ignored.
+		os.Setenv(envKey, "0")
+		defer os.Unsetenv(envKey)
+		got, err := base.GetConfigValue[int](m, "cap")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 42 {
+			t.Fatalf("host-only option must not pick up an env var added after construction, got %d", got)
+		}
+	})
+}

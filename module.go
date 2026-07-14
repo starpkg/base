@@ -18,6 +18,7 @@ type ConfigOptionInterface interface {
 	IsRequired() bool
 	IsSecret() bool
 	IsHostOnly() bool
+	FreezeHostOnlyEnv()
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
@@ -154,6 +155,10 @@ func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInt
 	if option.GetName() == "" {
 		option.SetName(name)
 	}
+	// Snapshot a host-only option's env value now, at construction time (before
+	// any script can mutate the process environment), so the host limit it
+	// enforces cannot be re-widened at runtime via a runtime.setenv-style builtin.
+	option.FreezeHostOnlyEnv()
 	m.configs[name] = option
 	return nil
 }
@@ -166,7 +171,14 @@ func (m *ConfigurableModule) Initialize() error {
 		if option.GetName() == "" {
 			option.SetName(name)
 		}
-		if option.IsRequired() && !option.HasValue() && !option.HasGetter() && !option.HasEnvVar() && !option.HasDefault() {
+		// Backstop the construction-time snapshot: freeze any host-only option not
+		// already frozen at registration — e.g. one made host-only, or given its
+		// env var, AFTER it was added. Initialize is the last point before the
+		// module is sealed (no further config changes are accepted), so this
+		// captures everything configured before load. Idempotent: a no-op for the
+		// standard case where the option was frozen at registration.
+		option.FreezeHostOnlyEnv()
+		if isMissingRequired(option) {
 			return fmt.Errorf("%w: %s", ErrConfigRequired, option.GetName())
 		}
 		if err := option.Validate(); err != nil {
@@ -175,6 +187,15 @@ func (m *ConfigurableModule) Initialize() error {
 	}
 	m.initialized = true
 	return nil
+}
+
+// isMissingRequired reports whether a required option has no value from any
+// source (immediate value, getter, env var, or default) and so cannot be
+// satisfied at initialization.
+func isMissingRequired(option ConfigOptionInterface) bool {
+	return option.IsRequired() &&
+		!option.HasValue() && !option.HasGetter() &&
+		!option.HasEnvVar() && !option.HasDefault()
 }
 
 // LoadModule returns a Starlark module loader with registered built-in
