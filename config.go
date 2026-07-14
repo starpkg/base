@@ -57,6 +57,18 @@ func NewConfigOption[T any](defaultValue T) *ConfigOption[T] {
 	}
 }
 
+// NewNamedConfigOption creates a configuration option with its name, description,
+// and the conventional `<MODULE>_<NAME>` environment variable (both uppercased)
+// filled in. It collapses the per-module `genConfigOption` helper every domain
+// module hand-rolls — e.g. NewNamedConfigOption("yaml", "max_depth", "...", 64)
+// derives the env var `YAML_MAX_DEPTH`.
+func NewNamedConfigOption[T any](module, name, description string, defaultValue T) *ConfigOption[T] {
+	return NewConfigOption(defaultValue).
+		WithName(name).
+		WithDescription(description).
+		WithEnvVar(strings.ToUpper(module) + "_" + strings.ToUpper(name))
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Builder Methods
 //////////////////////////////////////////////////////////////////////////

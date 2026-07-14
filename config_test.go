@@ -1229,3 +1229,27 @@ func TestConvertEnvValue(t *testing.T) {
 		}
 	})
 }
+
+// TestNewNamedConfigOption verifies the scaffolding helper fills in name,
+// description, and the conventional <MODULE>_<NAME> env var (both uppercased),
+// collapsing the per-module genConfigOption every domain module hand-rolls.
+func TestNewNamedConfigOption(t *testing.T) {
+	opt := base.NewNamedConfigOption("yaml", "max_depth", "max nesting depth", 64)
+	if got := opt.GetName(); got != "max_depth" {
+		t.Errorf("name = %q, want max_depth", got)
+	}
+	info := opt.GetInfo()
+	if got := info["env_var"]; got != "YAML_MAX_DEPTH" {
+		t.Errorf("env_var = %v, want YAML_MAX_DEPTH", got)
+	}
+	if got := info["description"]; got != "max nesting depth" {
+		t.Errorf("description = %v, want max nesting depth", got)
+	}
+	if v, err := opt.GetValue(); err != nil || v != 64 {
+		t.Errorf("GetValue() = %v, %v; want 64, nil", v, err)
+	}
+	// a module name with a digit uppercases correctly (s3 -> S3_REGION)
+	if got := base.NewNamedConfigOption("s3", "region", "", "").GetInfo()["env_var"]; got != "S3_REGION" {
+		t.Errorf("env_var = %v, want S3_REGION", got)
+	}
+}
