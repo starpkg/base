@@ -2083,6 +2083,29 @@ func TestHostOnlyOptionEnvSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("late SetHostOnly is snapshotted by the Initialize backstop", func(t *testing.T) {
+		t.Setenv(envKey, "100")
+		opt := base.NewConfigOption(0).WithName("cap").WithEnvVar(envKey) // not host-only yet
+		m, err := base.NewConfigurableModuleWithConfigOptions(opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt.SetHostOnly(true) // becomes host-only AFTER registration
+		// Invoking the loader runs Initialize, which backstops the freeze.
+		if _, err := m.LoadModule("cfg", nil)(); err != nil {
+			t.Fatal(err)
+		}
+		os.Setenv(envKey, "0")
+		defer os.Unsetenv(envKey)
+		got, err := base.GetConfigValue[int](m, "cap")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 100 {
+			t.Fatalf("a late-host-only option must be frozen by the Initialize backstop, got %d", got)
+		}
+	})
+
 	t.Run("host-only env added after construction is not picked up", func(t *testing.T) {
 		os.Unsetenv(envKey)
 		opt := base.NewConfigOption(42).WithName("cap").WithEnvVar(envKey).SetHostOnly(true)
