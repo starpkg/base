@@ -48,6 +48,16 @@ type ConfigOption[T any] struct {
 	isRequired bool
 	isSecret   bool
 	isHostOnly bool
+
+	// Environment snapshot for host-only options. A host-only option is a limit
+	// the module enforces against untrusted scripts; if its value were read from
+	// the live process environment at check time, a script able to mutate that
+	// environment (e.g. via a runtime.setenv builtin) could re-widen the limit.
+	// FreezeHostOnlyEnv captures the env value once at module construction (before
+	// any script runs) so later mutation can't move it.
+	envSnapshotDone   bool
+	envSnapshotValue  string
+	envSnapshotExists bool
 }
 
 // NewConfigOption creates a new configuration option with the given default value.
@@ -161,6 +171,11 @@ func (o *ConfigOption[T]) SetSecret(secret bool) *ConfigOption[T] {
 // able to enforce against untrusted scripts, which a script-settable option
 // cannot do (it could just raise or zero the limit). Defaults to false, so
 // existing options remain script-settable exactly as before.
+//
+// A host-only option's environment-variable value is also snapshotted when the
+// option is registered on a module (see FreezeHostOnlyEnv), so a script that can
+// mutate the process environment at runtime (e.g. via a runtime.setenv builtin)
+// cannot re-widen the limit through its env var either.
 func (o *ConfigOption[T]) SetHostOnly(hostOnly bool) *ConfigOption[T] {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -258,6 +273,33 @@ func (o *ConfigOption[T]) IsHostOnly() bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.isHostOnly
+}
+
+// FreezeHostOnlyEnv snapshots the environment-variable value of a host-only
+// option so a later mutation of the process environment cannot change it. It is
+// called once when the option is registered on a module — i.e. during Go
+// construction, before any Starlark script runs — so the captured value is the
+// one the host intended. It is a no-op for a non-host-only option (those stay
+// dynamic, reading the live environment), for an option without an env var, and
+// when already frozen. See SetHostOnly.
+func (o *ConfigOption[T]) FreezeHostOnlyEnv() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.isHostOnly || o.envSnapshotDone || o.EnvVar == "" {
+		return
+	}
+	o.envSnapshotValue, o.envSnapshotExists = os.LookupEnv(o.EnvVar)
+	o.envSnapshotDone = true
+}
+
+// lookupEnv returns the environment value used during resolution. For a frozen
+// host-only option it returns the construction-time snapshot (immune to later
+// in-script env mutation); otherwise it reads the live environment.
+func (o *ConfigOption[T]) lookupEnv() (string, bool) {
+	if o.isHostOnly && o.envSnapshotDone {
+		return o.envSnapshotValue, o.envSnapshotExists
+	}
+	return os.LookupEnv(o.EnvVar)
 }
 
 // HasValue returns whether the configuration option has a value set.
@@ -709,9 +751,11 @@ func (o *ConfigOption[T]) resolveValue() (value T, err error) {
 		return o.getter(), nil
 	}
 
-	// Priority 3: Environment variable takes precedence over default value
+	// Priority 3: Environment variable takes precedence over default value.
+	// A host-only option reads its construction-time snapshot instead of the live
+	// environment, so an in-script env mutation cannot re-widen a host limit.
 	if o.EnvVar != "" {
-		if envValue, exists := os.LookupEnv(o.EnvVar); exists {
+		if envValue, exists := o.lookupEnv(); exists {
 			if converted, ok := o.convertEnvValue(envValue); ok {
 				return converted, nil
 			}

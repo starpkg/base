@@ -18,6 +18,7 @@ type ConfigOptionInterface interface {
 	IsRequired() bool
 	IsSecret() bool
 	IsHostOnly() bool
+	FreezeHostOnlyEnv()
 	HasValue() bool
 	HasGetter() bool
 	HasDefault() bool
@@ -154,6 +155,10 @@ func (m *ConfigurableModule) SetConfigOption(name string, option ConfigOptionInt
 	if option.GetName() == "" {
 		option.SetName(name)
 	}
+	// Snapshot a host-only option's env value now, at construction time (before
+	// any script can mutate the process environment), so the host limit it
+	// enforces cannot be re-widened at runtime via a runtime.setenv-style builtin.
+	option.FreezeHostOnlyEnv()
 	m.configs[name] = option
 	return nil
 }
