@@ -125,6 +125,21 @@ the module enforces) expose only `get_<key>`, never a setter. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
 accessor contract and conversion rules.
 
+## Shared safety utilities (`base/util`)
+
+`base/util` is a small set of hardened, Go-side primitives that every domain
+module can reuse instead of re-implementing (often subtly wrong): bounded input
+(`ReadAllLimited`, `CheckInputSize`, `CappedWriter`), constant-time secret
+comparison (`SecretEqual`), float-safe duration parsing (`DurationFromSeconds`,
+which avoids the `time.Duration(sec)*time.Second` sub-second truncation), a
+run-context-derived operation context with timeout (`OpContext`), a call-once
+retry that never skips the operation on `attempts <= 0` (`Retry`), a path jail
+(`ResolveUnder`) that confines a script-supplied path to a root, panic recovery
+around third-party calls (`Recover`/`SafeCall`), and a child-process environment
+allowlist (`BuildChildEnv`) that does not leak the host's full environment. These
+are ordinary Go helpers (no Starlark surface); import
+`github.com/starpkg/base/util`.
+
 ## Contributing
 
 Contributions are welcome. Please open an issue or submit a pull request if you
