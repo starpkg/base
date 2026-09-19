@@ -1,6 +1,7 @@
 package util
 
 import (
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -185,5 +186,43 @@ func TestToStarlark_Unsupported(t *testing.T) {
 	}
 	if _, err := ToStarlark(map[interface{}]interface{}{1: make(chan int)}, DecodeLimits{}); err == nil {
 		t.Error("unsupported value in a non-string map should error")
+	}
+}
+
+func TestToStarlarkBigInts(t *testing.T) {
+	for _, text := range []string{"0", "1", "-1", "18446744073709551616", "-1427247692705959881058285969449495136382746624"} {
+		n, _ := new(big.Int).SetString(text, 10)
+		for _, input := range []interface{}{n, *n} {
+			v, err := ToStarlark(input, DecodeLimits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := v.(starlark.Int); !ok || v.String() != text {
+				t.Fatalf("%T(%s): %v", input, text, v)
+			}
+		}
+		v, err := ToStarlark(n, DecodeLimits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.SetInt64(99)
+		if v.String() != text {
+			t.Fatal("host mutation changed an immutable Starlark integer")
+		}
+	}
+	var nilInt *big.Int
+	if _, err := ToStarlark(nilInt, DecodeLimits{}); err == nil {
+		t.Fatal("typed nil integer accepted")
+	}
+	bigKey, _ := new(big.Int).SetString("18446744073709551616", 10)
+	if _, err := ToStarlark(map[interface{}]interface{}{bigKey: 1, "18446744073709551616": 2}, DecodeLimits{}); err == nil || !strings.Contains(err.Error(), "collide") {
+		t.Fatalf("big-int key collision: %v", err)
+	}
+	v, err := ToStarlark(map[string]interface{}{"items": []interface{}{bigKey}}, DecodeLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.String() != `{"items": [18446744073709551616]}` {
+		t.Fatalf("nested big int: %v", v)
 	}
 }
