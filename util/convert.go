@@ -2,6 +2,7 @@ package util
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"sort"
 	"time"
@@ -20,6 +21,7 @@ type DecodeLimits struct {
 // yaml/toml/json — into a Starlark value, bounded by lim. It centralizes the
 // hardened "capwalk" every starpkg codec re-implemented (each subtly different):
 //
+//   - preserves big.Int and *big.Int as immutable exact integers;
 //   - caps nesting depth and total node count from lim;
 //   - materializes maps in deterministic (sorted-key) order;
 //   - tames a time.Time (RFC 3339, so sub-second precision is discarded) and any
@@ -76,6 +78,13 @@ func simpleToStarlark(v interface{}) (starlark.Value, bool) {
 		return starlark.Bool(x), true
 	case string:
 		return starlark.String(x), true
+	case big.Int:
+		return starlark.MakeBigInt(new(big.Int).Set(&x)), true
+	case *big.Int:
+		if x != nil {
+			return starlark.MakeBigInt(new(big.Int).Set(x)), true
+		}
+		return nil, false
 	case []byte:
 		return starlark.Bytes(x), true
 	case time.Time:
