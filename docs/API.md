@@ -10,7 +10,7 @@ quickstart, see the [README](../README.md).
 the configuration options a host registered, so the exact function names depend
 on the module's config keys. For every registered option named `<name>` the
 loader generates a `set_<name>` setter — **unless the option is host-only**, in
-which case no setter is generated so a script cannot change it — and for every
+which case no script setter is generated — and for every
 **non-secret** option a `get_<name>` getter; any callables passed in
 `additionalFuncs` are merged in alongside under their own names.
 
@@ -26,8 +26,8 @@ which case no setter is generated so a script cannot change it — and for every
 ## Generated configuration accessors
 
 When a `ConfigurableModule` is loaded with `LoadModule(moduleName, …)`, each
-registered option contributes one or two builtins to the module namespace, named
-by string concatenation from the option's key:
+registered option contributes zero, one or two builtins to the module namespace.
+Their names are concatenated from the option's key:
 
 | Generated builtin | Generated for              | Signature           |
 |-------------------|----------------------------|---------------------|
@@ -36,9 +36,18 @@ by string concatenation from the option's key:
 
 So a module with options `api_key` (secret) and `endpoint` (non-secret) exposes
 exactly `set_api_key`, `set_endpoint`, and `get_endpoint` — a setter for every
-non-host-only option and a getter for every non-secret option. A **host-only**
-option (e.g. a limit the module enforces) gets a `get_<name>` but no
-`set_<name>`, so a script can read it but never change it.
+non-host-only option and a getter for every non-secret option. The flags are
+independent:
+
+| Secret | Host-only | Generated accessors |
+| --- | --- | --- |
+| No | No | `set_<name>`, `get_<name>` |
+| Yes | No | `set_<name>` only |
+| No | Yes | `get_<name>` only |
+| Yes | Yes | Neither |
+
+These flags control generated accessors, not what host-supplied additional
+functions may expose. Go code can still configure and read the option.
 
 ### `set_<name>(value)`
 
@@ -95,8 +104,8 @@ an explicit `set_<name>` value, then the getter, then the environment variable,
 then the default.
 
 This builtin is **only generated for non-secret options.** A `SetSecret(true)`
-option exposes its `set_<name>` but no `get_<name>` — secret values are never
-readable from a script (Go code can still read them via `GetConfigValue`).
+option has no generated `get_<name>`; it has a generated `set_<name>` only if it
+is not also host-only. Go code can still read the value via `GetConfigValue`.
 
 **Parameters:** none.
 
@@ -120,8 +129,9 @@ print(get_timeout())
 Any callables passed to `LoadModule(moduleName, additionalFuncs)` (a
 `starlark.StringDict` of `starlark.Callable` values supplied by the host module)
 are merged into the same module namespace under their own names, alongside the
-generated `set_<name>` / `get_<name>` accessors. Their signatures, parameters,
-returns, and errors are defined by the host module that registers them, not by
+generated `set_<name>` / `get_<name>` accessors. Additional functions are merged
+last and replace a generated accessor if they use the same name. Their
+signatures, parameters, returns, and errors are defined by the host module, not by
 `base`; consult that module's own reference.
 
 ```python
@@ -175,6 +185,11 @@ variable is whatever name the host passes to `WithEnvVar`; the conventional name
 a `starpkg` domain module uses is `<MODULE>_<KEY>` (uppercased), e.g. a
 `timeout` option on the `sqlite` module reads `SQLITE_TIMEOUT`.
 
+For host-only options, the environment value is snapshotted when the option is
+registered; `Initialize` captures it if no snapshot was taken yet. Later
+environment changes do not refresh that snapshot. Non-host-only options read the
+live environment. Go-side values and getters still have higher priority.
+
 The generated-accessor contract that every `base`-built option follows is below.
 `<MODULE>` is the loaded module name, `<KEY>` the uppercased option key; the env
 var is host-chosen via `WithEnvVar` (conventionally `<MODULE>_<KEY>`), and the
@@ -183,17 +198,17 @@ default/description are whatever the host declared (`WithDefault` /
 
 - **`<key>` (plain)** — getter `get_<key>`, setter `set_<key>`; both value
   reads and writes are reachable from a script.
-- **`<key>` (secret)** — setter `set_<key>` only; no getter is generated, since
-  secrets are never readable from a script.
-- **`<key>` (host-only)** — getter `get_<key>` only; no setter is generated, so a
-  script can read the value but never change it (a limit the module enforces). A
-  host-only **and** secret option gets neither accessor.
+- **`<key>` (secret, not host-only)** — setter `set_<key>` only; no getter is
+  generated.
+- **`<key>` (host-only, not secret)** — getter `get_<key>` only; no setter is
+  generated for this host-enforced option.
+- **`<key>` (host-only and secret)** — neither accessor is generated.
 
-**Secret options expose only `set_<key>` — never a getter.** A host marks an
-option secret with `SetSecret(true)` (or the equivalent `genSecretConfigOption`
-helper a domain module wraps it in); the loader then emits the `set_<key>` setter
-but no `get_<key>`, and `ListConfigs()` / `GetInfo()` omit the value. Go code can
-still read a secret via `GetConfigValue`, but it is never reachable from a script.
+**Secret options have no generated getter.** A host marks an option secret with
+`SetSecret(true)` (or a domain module's `genSecretConfigOption` helper); the loader
+emits `set_<key>` only when the option is not host-only. `ListConfigs()` /
+`GetInfo()` omit the secret value. Go code can still read it via `GetConfigValue`;
+any further script access depends on the functions the host supplies.
 
 **Example:**
 
@@ -212,5 +227,3 @@ For the resolution-priority model, the Go-side builder/accessor API
 (`NewConfigOption`, `WithEnvVar`, `WithDefault`, `SetSecret`, `GetConfigValue`,
 …), and how a host registers options, see the [README](../README.md) and the
 [GoDoc](https://pkg.go.dev/github.com/starpkg/base).
-</content>
-</invoke>
