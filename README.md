@@ -14,23 +14,24 @@ The `starpkg` ecosystem gives Starlark scripts *support for the necessary
 for ease of use.* `base` is the layer beneath all of that: not itself a local
 capability or an online-service binding, but the **shared plumbing** every domain
 module (`sqlite`, `web`, `llm`, `mq`, `s3`, `email`, …) uses to declare its typed
-configuration, resolve it from values / getters / environment / defaults, keep
-secrets out of scripts, and surface the result to Starlark.
+configuration, resolve it from values / getters / environment / defaults, and
+control which configuration accessors are available to Starlark.
 
 It provides:
 
 - **Type-safe configuration** using Go generics (`ConfigOption[T]`).
 - **Multiple configuration sources** with a fixed precedence: explicit value →
   getter → environment variable → default.
-- **Secret value handling** so sensitive options are settable but never readable
-  from a script.
+- **Secret value handling**: no generated getter for a secret option; it remains
+  script-settable unless it is also host-only.
 - **Environment-variable integration**, with automatic string-to-type parsing.
 - **Automatic Starlark wiring**: `LoadModule` generates a `set_<key>` setter for
   every non-host-only option and a `get_<key>` getter for every non-secret option.
 
-`base` is an L4 `starpkg` module that depends downward on `1set/starlet` (the
-Machine plus `dataconv`) and transitively on `1set/starlight` plus
-`go.starlark.net`; nothing in the ecosystem sits below it except those runtimes.
+`base` belongs to L3, the `starpkg` domain-module layer, and supplies shared
+configuration support to other modules in that layer. It depends on L2
+`1set/starlet` (the Machine plus `dataconv`), with L1 `1set/starlight` and L0
+`go.starlark.net` beneath it. The host runtime `1set/starbox` is L4.
 
 For the complete per-builtin reference — the generated accessors, their
 signatures, parameters, returns, errors, value conversion, and the configuration
@@ -58,7 +59,7 @@ import (
 func main() {
     module := base.NewConfigurableModule()
 
-    // A secret option: settable from a script, but never readable.
+    // A non-host-only secret option: script setter, no generated getter.
     module.SetConfigOption("api_key",
         base.NewConfigOption("").
             WithDescription("API key for authentication").
@@ -106,8 +107,8 @@ the config keys:
   `None`. Generated for every **non-host-only** option (secret or not); a
   host-only option has no setter.
 - `get_<key>()` — return the resolved value of non-secret option `<key>`.
-  Generated for **non-secret options only** — a secret option exposes its setter
-  but no getter.
+  Generated for **non-secret options only**; a secret option has no generated
+  getter, and has a setter only when it is not host-only.
 
 Any callables passed in `additionalFuncs` are merged in under their own names.
 
@@ -119,9 +120,10 @@ errors, and examples of every generated accessor.
 Each option becomes a `set_<key>` setter (unless it is host-only) and a
 `get_<key>` getter (unless it is secret); a value resolves in priority order —
 explicit `set_<key>` → getter → environment variable (`WithEnvVar`,
-conventionally `<MODULE>_<KEY>`) → default. Secret options expose only
-`set_<key>`, never a getter; host-only options (`SetHostOnly(true)`, for a limit
-the module enforces) expose only `get_<key>`, never a setter. See the
+conventionally `<MODULE>_<KEY>`) → default. A secret option has no generated
+getter; a host-only option (`SetHostOnly(true)`, for a limit the module enforces)
+has no generated setter. An option with both flags has neither accessor. Go code
+can still configure and read it. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
 accessor contract and conversion rules.
 
@@ -149,4 +151,3 @@ have any improvements or suggestions.
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file
 for details.
-</content>
