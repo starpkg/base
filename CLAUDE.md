@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`starpkg/base` is the **foundation L4 module** of the Star\* ecosystem. The `starpkg` mandate is *support for the necessary **local** operations + simple abstractions over common **online** services, for ease of use* — and `base` is the shared plumbing every domain module (`sqlite`, `web`, `llm`, `mq`, `s3`, `email`, …) is built on. It is neither a local capability nor an online-service binding itself; it is the **typed-configuration + Starlark-wiring layer** they all import.
+`starpkg/base` is the **foundation L3 module** of the Star\* ecosystem. The `starpkg` mandate is *support for the necessary **local** operations + simple abstractions over common **online** services, for ease of use* — and `base` is the shared plumbing every active domain module (`sqlite`, `web`, `llm`, `s3`, `email`, …) is built on. It is neither a local capability nor an online-service binding itself; it is the **typed-configuration + Starlark-wiring layer** they all import.
 
 Concretely, `base` gives a module author three things:
 
@@ -12,7 +12,7 @@ Concretely, `base` gives a module author three things:
 - **A configurable module container** (`ConfigurableModule`) that holds those options, is immutable after `Initialize()`, and emits a `starlet.ModuleLoader`.
 - **Automatic Starlark wiring**: `LoadModule` generates a `set_<name>` builtin for every non-host-only option and a `get_<name>` builtin for every non-secret option, plus any host-supplied `additionalFuncs`.
 
-Layer position: depends downward on `1set/starlet` (the Machine + `dataconv` for Go⇄Starlark marshalling) and transitively on `1set/starlight` + `go.starlark.net`. Every other `starpkg` module depends **on it**; it depends on nothing else in the ecosystem.
+Layer position: depends downward on `1set/starlet` (the Machine + `dataconv` for Go⇄Starlark marshalling) and transitively on `1set/starlight` + `go.starlark.net`. Every active `starpkg` domain module depends **on it**; it depends on nothing else in the ecosystem.
 
 ## Dev commands
 
@@ -54,8 +54,8 @@ The module is a **typed-config core with a Starlark adapter on top**. One generi
 
 1. **No host panics from script input (PKG-03).** `LoadModule` defers `Initialize()` into the returned loader so a bad config becomes the loader's `error`, never a crash. `SetValueFromStarlark` and `resolveValue` both carry a `recover()` that converts a panic into a wrapped `ErrConfigInvalidValue` / `ErrConfigGetterPanic`. Don't remove these deferred recovers.
 2. **`None`/nil is rejected, not dereferenced.** `dataconv.Unmarshal(None)` yields a nil interface whose `reflect.TypeOf` is a nil `Type` — calling `.Kind()` on it panics. `SetValueFromStarlark` checks `gv == nil` up front and returns an error. Keep that guard before any reflection.
-3. **Secrets never leak to scripts.** A `SetSecret(true)` option gets a `set_<name>` builtin but **no** `get_<name>`, and `GetInfo()` omits its value. Go code can still read it via `GetConfigValue`. Don't add a script-visible read path for secrets.
-4. **Immutable after `Initialize()`.** Every setter checks `m.initialized` and returns `ErrModuleAlreadyInitialized`. The config map is guarded by `sync.RWMutex` (and each `ConfigOption` by its own mutex) so a loaded module is safe under concurrent script execution. Don't introduce post-init mutation.
+3. **Secrets never leak to scripts.** A `SetSecret(true)` option gets **no** `get_<name>`, and `GetInfo()` omits its value. It gets a `set_<name>` only when it is not also host-only. Go code can still read it via `GetConfigValue`. Don't add a script-visible read path for secrets.
+4. **Immutable after `Initialize()`.** Every setter checks `m.initialized` and returns `ErrModuleAlreadyInitialized`. The config map is guarded by `sync.RWMutex` (and each `ConfigOption` by its own mutex). These protect internal bookkeeping; the host must still coordinate callbacks and mutable values shared with scripts. Don't introduce post-init mutation.
 5. **Backward compatibility (iron rule).** The resolution priority (value > getter > env > default), the generated `set_`/`get_` naming, and the exposure rules (non-secret → `get_`, non-host-only → `set_`; a host-only+secret option gets neither) are observable contract for every downstream module and its scripts. Any new lever must default to today's behavior so existing scripts run identically — `SetHostOnly` defaults to false, so an option stays script-settable unless a module opts in.
 6. **Host-only env is snapshotted, not live.** A host-only option is a limit the module enforces against untrusted scripts, so it must not be re-widenable at runtime. `SetConfigOption` calls `FreezeHostOnlyEnv()` when the option is registered (Go construction, before any script runs), capturing its env-var value once; `resolveValue` reads that snapshot (via `lookupEnv`) instead of the live environment for host-only options. This closes the bypass where a script that can mutate the process env — e.g. via starlet's `runtime.setenv` — would otherwise `setenv("MODULE_LIMIT", "0")` and disable the cap. Non-host-only options stay dynamic (live env). Don't make host-only env resolution live again.
 
@@ -75,7 +75,7 @@ Three layers must stay in sync (enforced by the doc standard, `plan/starpkg文�
 
 ## Release discipline
 
-- **Floor = go 1.19** (`go.mod`), matching the pinned `go.starlark.net` baseline (`ffb3f39`) and `1set/starlet v0.2.3` (which carries starlight v0.2.1 transitively). The floor only rises in this repo's own isolated pin-upgrade PR.
-- **CI matrix** = `[1.19.x, 1.25.x]` via the centralized reusable workflow `1set/meta/.github/workflows/go-ci.yml` (pinned to a full commit SHA), with `doc-coverage: true` enabling the `doccov` gate.
+- **Floor = go 1.19** (`go.mod`), matching the pinned `go.starlark.net` baseline (`ffb3f39`) and `1set/starlet v0.2.5` and `1set/starlight v0.2.3`. The floor only rises in this repo's own isolated pin-upgrade PR.
+- **CI matrix** = `[1.19.x, 1.27.x]` via the centralized reusable workflow `1set/meta/.github/workflows/go-ci.yml` (pinned to a full commit SHA), with `doc-coverage: true` enabling the `doccov` gate.
 - **Pin upgrade is the last PR** of the repo's series and is isolated; **don't tag a release until it merges.**
 - **Bumping the version, the go floor, or tagging are user-confirmed actions** — never tag autonomously; default to patch bumps; published tags are immutable in the module proxy.
